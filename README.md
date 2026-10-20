@@ -1,122 +1,61 @@
-# PreMedia API
+# Premedia Architecture & Progress Notes
 
-A minimal REST API backend for Saisha Technologies' PreMedia portal. It uses Python 3.13+, FastAPI, and the Google Cloud Firestore server SDK.
+## System Overview (3-Tier Architecture)
+- **Tier 1 (Presentation):** React frontend hosted via GitHub Pages (`saishatech18/premedia`), served at `saishatech.in/premedia` via Vercel rewrite.
+- **Tier 2 (Logic / Middle Tier):** FastAPI Python backend (`saishatech18/premedia-api`). Sole gateway to the data layer.
+- **Tier 3 (Data):** PostgreSQL relational database handling RBAC and DAM metadata.
+- **Storage Layer (DAM Assets):** External Object Storage (S3 / GCS / R2) for large artwork and design files using pre-signed upload URLs. The database stores metadata and file URLs only.
 
-## Project structure
+---
 
-```text
+## Backend (`premedia-api`) Structure
+
 premedia-api/
 ├── app/
-│   ├── __init__.py
-│   ├── main.py
-│   ├── config.py
-│   ├── db.py
-│   └── routes.py
-├── .env.example
+│   ├── init.py
+│   ├── config.py       # Reads environment variables (DATABASE_URL)
+│   ├── db.py           # SQLAlchemy engine, session maker, get_db dependency
+│   ├── models.py       # DB schema: Role, User, Artwork, ArtworkStatus
+│   ├── routes.py       # API endpoints (auth, users, artworks)
+│   └── main.py         # App factory, lifespan table generation
+├── .env                # Local secrets (ignored by git)
 ├── .gitignore
-├── requirements.txt
-└── README.md
-```
+└── requirements.txt    # fastapi, uvicorn, sqlalchemy, psycopg2-binary, pydantic-settings
 
-## Prerequisites
 
-- Python 3.13 or newer
-- An existing Google Cloud project with Firestore enabled in Native mode
-- A downloaded service-account JSON key with Firestore access
+---
 
-## Google Cloud configuration
+## Database Schema (`models.py`)
 
-Place the service-account JSON file in the project root, or use an absolute path. Keep it private; `.gitignore` excludes service-account filenames.
+1. **`roles` Table (RBAC)**
+   - `id` (PK, Integer)
+   - `name` (String, unique: e.g., admin, designer, client)
+   - `description` (String)
 
-Create `.env` from `.env.example` and set:
+2. **`users` Table**
+   - `id` (PK, Integer)
+   - `email` (String, unique)
+   - `hashed_password` (String)
+   - `full_name` (String)
+   - `role_id` (FK -> `roles.id`)
 
-```dotenv
-GOOGLE_APPLICATION_CREDENTIALS=./premedia-service-account.json
-GOOGLE_CLOUD_PROJECT=premedia-ap
-FIRESTORE_COLLECTION=artwork_tasks
-```
+3. **`artworks` Table (DAM Metadata)**
+   - `id` (PK, Integer)
+   - `title` (String)
+   - `file_url` (String: target path in Object Storage, never stored as raw binary)
+   - `file_size_mb` (Integer)
+   - `status` (Enum: `pending`, `approved`, `rejected`)
+   - `created_at` (DateTime)
+   - `owner_id` (FK -> `users.id`)
 
-`GOOGLE_APPLICATION_CREDENTIALS` points to the JSON key, `GOOGLE_CLOUD_PROJECT` is the Google Cloud project ID, and `FIRESTORE_COLLECTION` defaults to `artwork_tasks`. For Google Cloud deployment, omit the key path and use the runtime's Application Default Credentials instead.
+---
 
-## Set up the local project
-
-From the project root:
-
-### Windows PowerShell
-
-```powershell
-py -3.13 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-Copy-Item .env.example .env
-```
-
-### macOS / Linux
-
-```bash
-python3.13 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-cp .env.example .env
-```
-
-## Run the API
-
-With the virtual environment activated:
-
-```bash
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-Open the interactive API documentation at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
-
-The configured browser origins are `http://localhost:3001` and `https://premedia.saishatech.in`. CORS does not affect direct curl requests.
-
-## Test the endpoints
-
-### Health check
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-Expected response:
-
-```json
-{"status":"ok","service":"premedia-api"}
-```
-
-### Create an artwork task
-
-```bash
-curl.exe -X POST http://127.0.0.1:8000/api/v1/tasks -H "Content-Type: application/json" -d '{"title":"Summer catalogue artwork","client_name":"Example Client","task_type":"Master AW"}'
-```
-
-`status` is optional and defaults to `draft`. Other example task types include `Reprographics` and `KLD Amendment`.
-
-A successful response has HTTP `201` and includes the generated Firestore document ID:
-
-```json
-{
-  "title": "Summer catalogue artwork",
-  "client_name": "Example Client",
-  "task_type": "Master AW",
-  "status": "draft",
-  "id": "generated-firestore-document-id",
-  "created_at": "2026-09-11T12:00:00Z"
-}
-```
-
-### List tasks
-
-```bash
-curl http://127.0.0.1:8000/api/v1/tasks
-```
-
-The API iterates over the Firestore collection stream and returns all task documents as a JSON array.
-
-## Deployment note
-
-For Google Cloud deployment, prefer Application Default Credentials from the attached runtime service account or another managed identity. Do not upload `service-account.json` to the server. Set `GOOGLE_CLOUD_PROJECT` or configure the platform's project context as appropriate for the selected Google Cloud service.
+## Current Status & Next Milestones
+- [x] Frontend deployed & live on GitHub Pages
+- [x] Backend folder structure & PostgreSQL driver configured
+- [x] SQLAlchemy models defined for RBAC and Artwork metadata
+- [x] Database auto-creation hook added to `main.py`
+- [ ] Seed default roles (`admin`, `designer`, `client`)
+- [ ] Implement user registration & password hashing in `routes.py`
+- [ ] Add JWT authentication & role-verification middleware
+- [ ] Connect object storage (S3/R2) for DAM pre-signed uploads

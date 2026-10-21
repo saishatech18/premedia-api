@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Enum
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
-from db import Base
+from app.db import Base
 
 # 1. ROLES TABLE (For RBAC)
 class Role(Base):

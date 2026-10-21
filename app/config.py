@@ -1,4 +1,5 @@
 """Application configuration loaded from environment variables."""
+from typing import Optional
 
 from functools import lru_cache
 
@@ -9,8 +10,8 @@ class Settings(BaseSettings):
     """Runtime settings for the API."""
 
     app_name: str = "premedia-api"
-    google_application_credentials: str | None = None
-    google_cloud_project: str | None = None
+    
+    google_cloud_project: Optional[str] = None
     firestore_collection: str = "artwork_tasks"
 
     model_config = SettingsConfigDict(

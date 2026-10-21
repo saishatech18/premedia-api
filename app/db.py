@@ -1,32 +1,27 @@
-"""Firestore client setup."""
+import os
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+from dotenv import load_dotenv
 
-from functools import lru_cache
-from pathlib import Path
+# Load variables from your .env file
+load_dotenv()
 
-from google.cloud import firestore
-from google.oauth2 import service_account
+# Get the Supabase connection string from .env
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-from .config import settings
+# Establish the core connection to Supabase
+engine = create_engine(DATABASE_URL)
 
+# Create a session factory to handle individual database transactions
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-@lru_cache
-def get_firestore_client() -> firestore.Client:
-    """Create and cache a Firestore client.
+# This Base class is inherited by your database models (Users, Roles, Artworks)
+Base = declarative_base()
 
-    The Google Cloud SDK automatically uses GOOGLE_APPLICATION_CREDENTIALS
-    when it is set, or the default application credentials on Google Cloud.
-    """
-
-    if settings.google_application_credentials:
-        credential_path = Path(settings.google_application_credentials)
-        credentials = service_account.Credentials.from_service_account_file(
-            credential_path
-        )
-        return firestore.Client(
-            project=settings.google_cloud_project or credentials.project_id,
-            credentials=credentials,
-        )
-
-    if settings.google_cloud_project:
-        return firestore.Client(project=settings.google_cloud_project)
-    return firestore.Client()
+# A helper function to safely open and close database sessions for your API routes
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

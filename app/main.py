@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware # <--- NEW IMPORT
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 

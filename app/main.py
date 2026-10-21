@@ -2,9 +2,10 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from typing import List
+from pydantic import BaseModel
 
 from . import models, schemas
-from .database import engine, get_db
+from .db import engine, get_db
 
 # Create database tables if they do not exist
 models.Base.metadata.create_all(bind=engine)
@@ -19,6 +20,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Schema for login requests
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 
 @app.on_event("startup")
@@ -76,10 +83,9 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
             detail=f"Role '{user.role}' not recognized",
         )
 
-    # In production, ensure passwords use passlib/bcrypt hashing
     new_user = models.User(
         email=user.email,
-        hashed_password=user.password,  # Stored password
+        hashed_password=user.password,
         role_id=role_obj.id,
     )
     db.add(new_user)
@@ -87,3 +93,28 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db.refresh(new_user)
 
     return new_user
+
+
+@app.post("/login/")
+def login(credentials: LoginRequest, db: Session = Depends(get_db)):
+    """Verify user email and password."""
+    user = (
+        db.query(models.User)
+        .filter(models.User.email == credentials.email)
+        .first()
+    )
+
+    if not user or user.hashed_password != credentials.password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+        )
+
+    return {
+        "message": "Login successful",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "role_id": user.role_id,
+        },
+    }

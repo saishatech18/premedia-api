@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
-from fastapi.middleware.cors import CORSMiddleware # <--- NEW IMPORT
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -16,6 +16,7 @@ DEFAULT_ROLES = [
 def seed_roles():
     db = SessionLocal()
     try:
+        # Check if roles are already populated
         existing_count = db.query(models.Role).count()
         if existing_count == 0:
             for role_data in DEFAULT_ROLES:
@@ -28,17 +29,31 @@ def seed_roles():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Create tables if they do not exist
     Base.metadata.create_all(bind=engine)
+    # Seed default roles
     seed_roles()
     yield
 
+# Initialize the FastAPI app
 app = FastAPI(lifespan=lifespan, title="Premedia API")
+
+# --- CORS SETUP ---
+# This MUST be placed right after the app is created to allow frontend connections
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, change this to your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, OPTIONS, etc.)
+    allow_headers=["*"],  # Allows all headers
+)
+# ------------------
 
 # --- Pydantic Schemas for Data Validation ---
 class UserCreate(BaseModel):
     email: str
     password: str
-    role_id: int = 3  # Defaults to 3 (client) based on your seed order
+    role_id: int = 3  # Defaults to 3 (client)
 
 class UserResponse(BaseModel):
     id: int
@@ -60,10 +75,10 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    # Create the user (Note: You will want to add password hashing here later!)
+    # Create the user mapping fields to the database columns
     new_user = models.User(
         email=user.email, 
-        hashed_password=user.password, # Check app/models.py to ensure this matches your column name
+        hashed_password=user.password, 
         role_id=user.role_id
     )
     db.add(new_user)

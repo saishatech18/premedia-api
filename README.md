@@ -13,14 +13,14 @@
 premedia-api/
 ├── app/
 │   ├── init.py
-│   ├── config.py       # Reads environment variables (DATABASE_URL)
-│   ├── db.py           # SQLAlchemy engine, session maker, get_db dependency
+│   ├── config.py       # pydantic-settings Settings (app_name)
+│   ├── db.py           # Reads DATABASE_URL; SQLAlchemy engine, session maker, get_db dependency
 │   ├── models.py       # DB schema: Role, User, Artwork, ArtworkStatus
-│   ├── routes.py       # API endpoints (auth, users, artworks)
-│   └── main.py         # App factory, lifespan table generation
+│   ├── schemas.py      # Pydantic request/response schemas
+│   └── main.py         # App, CORS, table creation, role seeding, API endpoints
 ├── .env                # Local secrets (ignored by git)
 ├── .gitignore
-└── requirements.txt    # fastapi, uvicorn, sqlalchemy, psycopg2-binary, pydantic-settings
+└── requirements.txt    # fastapi, uvicorn, sqlalchemy, psycopg[binary], pydantic-settings
 
 
 ---
@@ -55,7 +55,9 @@ premedia-api/
 - [x] Backend folder structure & PostgreSQL driver configured
 - [x] SQLAlchemy models defined for RBAC and Artwork metadata
 - [x] Database auto-creation hook added to `main.py`
-- [ ] Seed default roles (`admin`, `designer`, `client`)
-- [ ] Implement user registration & password hashing in `routes.py`
+- [x] Seed default roles (`admin`, `designer`, `client`, `production`, `quality`)
+- [x] Firestore code removed; PostgreSQL is the only datastore
+- [x] User registration & login endpoints (`main.py`)
+- [ ] Password hashing (passwords are currently stored in plain text)
 - [ ] Add JWT authentication & role-verification middleware
 - [ ] Connect object storage (S3/R2) for DAM pre-signed uploads

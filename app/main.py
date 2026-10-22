@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List
 from pydantic import BaseModel
@@ -33,10 +34,12 @@ def startup_event():
     # Seed default RBAC roles if they are missing
     db: Session = next(get_db())
     try:
-        default_roles = ["Admin", "Production", "Quality", "Client"]
+        default_roles = ["admin", "designer", "client", "production", "quality"]
         for role_name in default_roles:
             existing = (
-                db.query(models.Role).filter(models.Role.name == role_name).first()
+                db.query(models.Role)
+                .filter(func.lower(models.Role.name) == role_name)
+                .first()
             )
             if not existing:
                 db.add(models.Role(name=role_name))
@@ -75,7 +78,9 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
 
     # Validate that the role exists
     role_obj = (
-        db.query(models.Role).filter(models.Role.name == user.role).first()
+        db.query(models.Role)
+        .filter(func.lower(models.Role.name) == user.role.lower())
+        .first()
     )
     if not role_obj:
         raise HTTPException(

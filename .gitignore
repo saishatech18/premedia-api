@@ -3,9 +3,6 @@ __pycache__/
 .venv/
 venv/
 .env
-service-account.json
-*-service-account.json
-*.json.key
 .pytest_cache/
 .mypy_cache/
 .vscode/

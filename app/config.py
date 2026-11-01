@@ -1,6 +1,7 @@
 """Application configuration loaded from environment variables."""
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,6 +9,7 @@ class Settings(BaseSettings):
     """Runtime settings for the API."""
 
     app_name: str = "premedia-api"
+    database_url: str = Field(min_length=1)
 
     model_config = SettingsConfigDict(
         env_file=".env",

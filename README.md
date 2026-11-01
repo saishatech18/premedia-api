@@ -111,8 +111,8 @@ curl -X POST http://localhost:8000/login/ \
 premedia-api/
 ├── app/
 │   ├── __init__.py
-│   ├── config.py       # pydantic-settings Settings (app_name)
-│   ├── db.py           # Reads DATABASE_URL; SQLAlchemy engine, session maker, get_db dependency
+│   ├── config.py       # pydantic-settings Settings: app_name, DATABASE_URL (from env / .env)
+│   ├── db.py           # SQLAlchemy engine (from settings), session maker, get_db dependency
 │   ├── models.py       # DB schema: Role, User, Artwork, ArtworkStatus
 │   ├── schemas.py      # Pydantic request/response schemas
 │   └── main.py         # App, CORS, table creation, role seeding, API endpoints

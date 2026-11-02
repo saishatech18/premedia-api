@@ -70,9 +70,10 @@ def get_optional_user(
             credentials.credentials,
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm],
+            options={"require": ["exp", "sub"]},
         )
         user_id = int(payload["sub"])
-    except (jwt.InvalidTokenError, KeyError, ValueError):
+    except (jwt.InvalidTokenError, ValueError):
         raise _unauthorized()
 
     user = db.query(models.User).filter(models.User.id == user_id).first()

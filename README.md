@@ -130,11 +130,11 @@ API endpoints live under `/api`, with no trailing slashes, to match the [premedi
 | `GET` | `/` | Public | Health check (outside `/api`) |
 | `POST` | `/api/auth/login` | Public | Log in: `{email, password}`. Returns `{token, user}`. |
 | `GET` | `/api/users` | Any logged-in user | List all users with their role |
-| `POST` | `/api/users` | Admin (no token needed for the first user) | Create a user: `{email, password, role, full_name?}`. `role` is a role slug. |
+| `POST` | `/api/users` | Admin (no token needed for the first user) | Create a user: `{email, password, role, full_name?}`. `role` is a role slug; the password must be 8–128 characters. |
 
 Authenticated requests send `Authorization: Bearer <token>`. Tokens are JWTs that expire after 8 hours (`ACCESS_TOKEN_EXPIRE_MINUTES`). A missing, invalid or expired token returns 401; a logged-in user without the required role gets 403.
 
-Users are returned as `{id, email, full_name, role_id, role: {id, name, description}}`, where `role.name` is the slug and `role.description` is the display label.
+Emails are case-insensitive: they are stored lowercased, and login matches any casing. Users are returned as `{id, email, full_name, role_id, role: {id, name, description}}`, where `role.name` is the slug and `role.description` is the display label.
 
 > ⚠️ **Not production-ready yet:** CORS allows all origins and there is no login rate limiting. See the milestones below.
 

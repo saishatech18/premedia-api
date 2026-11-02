@@ -44,10 +44,10 @@ Routes are defined on an `APIRouter(prefix="/api")` with **no trailing slashes**
 ## Behaviors and gotchas
 
 - **Tables are created at import time** by `models.Base.metadata.create_all(bind=engine)` in `main.py`. There are no migrations (no Alembic), so schema changes to existing tables are **not** applied automatically.
-- **Roles are seeded on startup** (deprecated `@app.on_event("startup")`) from `DEFAULT_ROLES` in `main.py`: `admin`, `project_manager`, `operator_retouching`, `operator_cgi`, `qc`, `client`. `Role.name` is the lowercase slug (the API identifier) and `Role.description` is the display label, which seeding keeps in sync. Role lookups are case-insensitive. Seeding never deletes roles; the old `designer`, `production` and `quality` roles were removed from Supabase by hand.
+- **Roles are seeded on startup** (`seed_roles()`, called from the FastAPI `lifespan` handler) from `DEFAULT_ROLES` in `main.py`: `admin`, `project_manager`, `operator_retouching`, `operator_cgi`, `qc`, `client`. `Role.name` is the lowercase slug (the API identifier) and `Role.description` is the display label, which seeding keeps in sync. Role lookups are case-insensitive. Seeding never deletes roles; the old `designer`, `production` and `quality` roles were removed from Supabase by hand.
 - **Auth:** passwords are Argon2-hashed. Tokens are stateless HS256 JWTs carrying only `sub` (user id) and `exp` (default 8 hours); there is no refresh, logout or revocation. Each request reloads the user from the DB, so role changes and deleted users take effect immediately. Missing, invalid or expired tokens give 401 with `WWW-Authenticate: Bearer`; a wrong role gives 403. Access checks that don't need the user object go in the route's `dependencies=[...]`.
-- CORS on this branch is `allow_origins=["*"]` with `allow_credentials=True`. On `main` it was an explicit list (`http://localhost:3001`, `https://premedia.saishatech.in`).
-- `UserCreate.email` is a plain `str`, even though `email-validator` is installed (it could be `EmailStr`).
+- CORS is `allow_origins=["*"]` with `allow_credentials=False`. Auth uses the `Authorization` header, not cookies, so credentials aren't needed. Locally the frontend calls the API through Vite's `/api` proxy, so it doesn't rely on CORS.
+- **Emails are trimmed and lowercased** before they're stored or looked up (`NormalizedEmail` and `LoginEmail` in `schemas.py`), so login and the duplicate check ignore case. `UserCreate.email` is validated as an `EmailStr`. Passwords must be 8–128 characters on create; login only enforces the 128 maximum, which bounds hashing work. A duplicate email that slips past the pre-check (concurrent requests) is caught as an `IntegrityError` and still returns 400.
 - `Artwork` has a model but no endpoints yet.
 
 ## Running locally
@@ -74,4 +74,4 @@ Startup fails if `DATABASE_URL` or `JWT_SECRET_KEY` is unset or invalid (pydanti
 - SQLAlchemy 2.1 makes `postgresql://` URLs use psycopg 3, so the driver is `psycopg[binary]`, not `psycopg2`.
 - Sync SQLAlchemy sessions through `Depends(get_db)`. Use `db.query(...)` (1.x-style), which matches the existing code.
 - Pydantic v2 is installed, but the schemas use the v1-style `class Config: from_attributes = True`. Match the style of the file you're editing.
-- Don't commit `.env` or `.DS_Store` (`.DS_Store` is currently tracked by mistake and isn't in `.gitignore`).
+- Don't commit `.env` or `.DS_Store` (both are in `.gitignore`).

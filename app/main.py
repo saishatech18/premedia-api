@@ -1,28 +1,17 @@
+from contextlib import asynccontextmanager
+
 from fastapi import APIRouter, FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from typing import List
 
 from . import auth, models, schemas
-from .db import engine, get_db
+from .db import SessionLocal, engine, get_db
 
 # Create database tables if they do not exist
 models.Base.metadata.create_all(bind=engine)
-
-app = FastAPI(title="Premedia Hub API")
-
-# Enable CORS for local frontend access
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# All API endpoints live under /api (no trailing slashes)
-api = APIRouter(prefix="/api")
 
 # Default RBAC roles: slug -> display label (stored in Role.description)
 DEFAULT_ROLES = {
@@ -35,11 +24,9 @@ DEFAULT_ROLES = {
 }
 
 
-@app.on_event("startup")
-def startup_event():
+def seed_roles():
     # Seed default RBAC roles if they are missing, and keep their labels current
-    db: Session = next(get_db())
-    try:
+    with SessionLocal() as db:
         for role_name, label in DEFAULT_ROLES.items():
             existing = (
                 db.query(models.Role)
@@ -51,8 +38,27 @@ def startup_event():
             elif existing.description != label:
                 existing.description = label
         db.commit()
-    finally:
-        db.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    seed_roles()
+    yield
+
+
+app = FastAPI(title="Premedia Hub API", lifespan=lifespan)
+
+# Auth uses Bearer tokens, not cookies, so CORS doesn't need credentials
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# All API endpoints live under /api (no trailing slashes)
+api = APIRouter(prefix="/api")
 
 
 @app.get("/")
@@ -107,7 +113,15 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
         role_id=role_obj.id,
     )
     db.add(new_user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # A concurrent request created the same email after the check above
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered",
+        )
     db.refresh(new_user)
 
     return new_user

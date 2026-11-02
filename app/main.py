@@ -1,9 +1,8 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import APIRouter, FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List
-from pydantic import BaseModel
 
 from . import models, schemas
 from .db import engine, get_db
@@ -22,27 +21,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# All API endpoints live under /api (no trailing slashes)
+api = APIRouter(prefix="/api")
 
-# Schema for login requests
-class LoginRequest(BaseModel):
-    email: str
-    password: str
+# Default RBAC roles: slug -> display label (stored in Role.description)
+DEFAULT_ROLES = {
+    "admin": "Administrator",
+    "project_manager": "Project Manager",
+    "operator_retouching": "Operator (Retouching)",
+    "operator_cgi": "Operator (CGI/DTP)",
+    "qc": "QC / Pre-flight",
+    "client": "Client (External Reviewer)",
+}
 
 
 @app.on_event("startup")
 def startup_event():
-    # Seed default RBAC roles if they are missing
+    # Seed default RBAC roles if they are missing, and keep their labels current
     db: Session = next(get_db())
     try:
-        default_roles = ["admin", "designer", "client", "production", "quality"]
-        for role_name in default_roles:
+        for role_name, label in DEFAULT_ROLES.items():
             existing = (
                 db.query(models.Role)
                 .filter(func.lower(models.Role.name) == role_name)
                 .first()
             )
             if not existing:
-                db.add(models.Role(name=role_name))
+                db.add(models.Role(name=role_name, description=label))
+            elif existing.description != label:
+                existing.description = label
         db.commit()
     finally:
         db.close()
@@ -53,15 +60,15 @@ def read_root():
     return {"status": "ok", "message": "Premedia Hub API is running"}
 
 
-@app.get("/users/", response_model=List[schemas.UserResponse])
+@api.get("/users", response_model=List[schemas.UserResponse])
 def get_users(db: Session = Depends(get_db)):
     """Fetch all users along with their assigned role."""
     users = db.query(models.User).all()
     return users
 
 
-@app.post(
-    "/users/",
+@api.post(
+    "/users",
     response_model=schemas.UserResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -91,6 +98,7 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     new_user = models.User(
         email=user.email,
         hashed_password=user.password,
+        full_name=user.full_name,
         role_id=role_obj.id,
     )
     db.add(new_user)
@@ -100,8 +108,8 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     return new_user
 
 
-@app.post("/login/")
-def login(credentials: LoginRequest, db: Session = Depends(get_db)):
+@api.post("/auth/login", response_model=schemas.LoginResponse)
+def login(credentials: schemas.LoginRequest, db: Session = Depends(get_db)):
     """Verify user email and password."""
     user = (
         db.query(models.User)
@@ -115,11 +123,7 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)):
             detail="Invalid email or password",
         )
 
-    return {
-        "message": "Login successful",
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "role_id": user.role_id,
-        },
-    }
+    return {"user": user}
+
+
+app.include_router(api)

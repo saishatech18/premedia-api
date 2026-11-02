@@ -5,7 +5,8 @@ from typing import Optional
 # Schema for role output
 class RoleResponse(BaseModel):
     id: int
-    name: str
+    name: str  # stable slug, e.g. "operator_retouching"
+    description: Optional[str] = None  # display label, e.g. "Operator (Retouching)"
 
     class Config:
         from_attributes = True
@@ -15,13 +16,15 @@ class RoleResponse(BaseModel):
 class UserCreate(BaseModel):
     email: str
     password: str
-    role: str
+    role: str  # role slug
+    full_name: Optional[str] = None
 
 
 # Schema for returning user data with role details
 class UserResponse(BaseModel):
     id: int
     email: str
+    full_name: Optional[str] = None
     role_id: Optional[int] = None
     role: Optional[RoleResponse] = None
 
@@ -33,3 +36,8 @@ class UserResponse(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+# Schema for a successful login
+class LoginResponse(BaseModel):
+    user: UserResponse

@@ -70,15 +70,15 @@ On startup the app creates any missing tables and seeds the default roles. `DATA
 ### 4. Try it
 
 ```bash
-# Create a user (role names are case-insensitive)
-curl -X POST http://localhost:8000/users/ \
+# Create a user (role is a slug, case-insensitive)
+curl -X POST http://localhost:8000/api/users \
   -H 'Content-Type: application/json' \
-  -d '{"email":"designer@example.com","password":"changeme","role":"designer"}'
+  -d '{"email":"operator@example.com","password":"changeme","role":"operator_retouching","full_name":"Op Erator"}'
 
 # Log in
-curl -X POST http://localhost:8000/login/ \
+curl -X POST http://localhost:8000/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"designer@example.com","password":"changeme"}'
+  -d '{"email":"operator@example.com","password":"changeme"}'
 ```
 
 ### Troubleshooting
@@ -94,12 +94,16 @@ curl -X POST http://localhost:8000/login/ \
 
 ## API Endpoints
 
+API endpoints live under `/api`, with no trailing slashes, to match the [premedia-frontend](https://github.com/saishatech18/premedia-frontend) API client.
+
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/` | Health check |
-| `GET` | `/users/` | List all users with their role |
-| `POST` | `/users/` | Create a user: `{email, password, role}`. `role` is a role name. |
-| `POST` | `/login/` | Check credentials: `{email, password}`. Returns user info (no token yet). |
+| `GET` | `/` | Health check (outside `/api`) |
+| `GET` | `/api/users` | List all users with their role |
+| `POST` | `/api/users` | Create a user: `{email, password, role, full_name?}`. `role` is a role slug. |
+| `POST` | `/api/auth/login` | Check credentials: `{email, password}`. Returns `{user}` (no token yet). |
+
+Users are returned as `{id, email, full_name, role_id, role: {id, name, description}}`, where `role.name` is the slug and `role.description` is the display label.
 
 > ⚠️ **Not production-ready yet:** passwords are stored in plain text, there is no authentication or role enforcement on any endpoint, and CORS allows all origins. See the milestones below.
 
@@ -127,8 +131,8 @@ premedia-api/
 
 1. **`roles`** (RBAC)
    - `id` (PK, Integer)
-   - `name` (String, unique, lowercase): `admin`, `designer`, `client`, `production`, `quality`
-   - `description` (String)
+   - `name` (String, unique, lowercase slug): `admin`, `project_manager`, `operator_retouching`, `operator_cgi`, `qc`, `client`
+   - `description` (String): display label, e.g. `Operator (Retouching)`
 
 2. **`users`**
    - `id` (PK, Integer)
@@ -158,7 +162,7 @@ Tables are created automatically on startup (`create_all`). It only creates **mi
 - [x] Backend structure & PostgreSQL (psycopg 3) driver configured
 - [x] SQLAlchemy models for RBAC and artwork metadata
 - [x] Tables auto-created on startup
-- [x] Default roles seeded (`admin`, `designer`, `client`, `production`, `quality`)
+- [x] Default roles seeded (`admin`, `project_manager`, `operator_retouching`, `operator_cgi`, `qc`, `client`)
 - [x] Firestore code removed; PostgreSQL is the only datastore
 - [x] User registration & login endpoints
 - [x] RLS enabled on all Supabase tables

@@ -40,4 +40,5 @@ class LoginRequest(BaseModel):
 
 # Schema for a successful login
 class LoginResponse(BaseModel):
+    token: str
     user: UserResponse

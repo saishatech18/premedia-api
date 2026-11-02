@@ -4,7 +4,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List
 
-from . import models, schemas
+from . import auth, models, schemas
 from .db import engine, get_db
 
 # Create database tables if they do not exist
@@ -60,7 +60,11 @@ def read_root():
     return {"status": "ok", "message": "Premedia Hub API is running"}
 
 
-@api.get("/users", response_model=List[schemas.UserResponse])
+@api.get(
+    "/users",
+    response_model=List[schemas.UserResponse],
+    dependencies=[Depends(auth.get_current_user)],
+)
 def get_users(db: Session = Depends(get_db)):
     """Fetch all users along with their assigned role."""
     users = db.query(models.User).all()
@@ -71,6 +75,7 @@ def get_users(db: Session = Depends(get_db)):
     "/users",
     response_model=schemas.UserResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(auth.require_admin_or_first_user)],
 )
 def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     # Check if user already exists
@@ -97,7 +102,7 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
 
     new_user = models.User(
         email=user.email,
-        hashed_password=user.password,
+        hashed_password=auth.hash_password(user.password),
         full_name=user.full_name,
         role_id=role_obj.id,
     )
@@ -110,20 +115,15 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
 
 @api.post("/auth/login", response_model=schemas.LoginResponse)
 def login(credentials: schemas.LoginRequest, db: Session = Depends(get_db)):
-    """Verify user email and password."""
-    user = (
-        db.query(models.User)
-        .filter(models.User.email == credentials.email)
-        .first()
-    )
-
-    if not user or user.hashed_password != credentials.password:
+    """Verify user email and password and issue an access token."""
+    user = auth.authenticate_user(db, credentials.email, credentials.password)
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
 
-    return {"user": user}
+    return {"token": auth.create_access_token(user), "user": user}
 
 
 app.include_router(api)

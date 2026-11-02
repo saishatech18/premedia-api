@@ -4,14 +4,14 @@ Backend API for **Premedia Hub**, a premedia / digital-asset-management (DAM) to
 
 ## Architecture
 
-- **Frontend:** React app in a separate repo (`saishatech18/premedia`), on GitHub Pages, served at `saishatech.in/premedia` (via a Vercel rewrite) and `premedia.saishatech.in`.
+- **Frontend:** React app in a separate private repo (`saishatech18/premedia-frontend`, checked out at `../premedia-frontend`), served under `/premedia/`. It calls this API under `/api` on the same domain. The older public `saishatech18/premedia` repo is the previous frontend and isn't used.
 - **This repo:** FastAPI + SQLAlchemy (sync) + PostgreSQL (hosted on Supabase; `DATABASE_URL` points there).
 - **Planned:** artwork binaries go in object storage (S3/GCS/R2) through pre-signed URLs. The DB stores only metadata and `file_url`, never file bytes.
 
 ## Branch state
 
-- `main` has only the initial commit: an old **Firestore** version. Don't use it as a reference.
-- `Postgresql` (the active branch) is SQLAlchemy/Postgres only. All Firestore code and dependencies have been removed.
+- `main` is the active branch. It is SQLAlchemy/Postgres only; all Firestore code and dependencies have been removed.
+- `Postgresql` is stale: it has no commits that aren't on `main`, and its README still documents the old `/users/` and `/login/` paths. Don't use it as a reference.
 - All configuration comes from `Settings` in `config.py` (`pydantic-settings`), which reads env vars and `.env`. `db.py` uses `settings.database_url`; add new settings there rather than calling `os.getenv`.
 - All live endpoints are defined directly in `app/main.py`.
 
@@ -26,25 +26,26 @@ Backend API for **Premedia Hub**, a premedia / digital-asset-management (DAM) to
 | File | Purpose |
 |---|---|
 | `app/main.py` | App, CORS, startup role seeding, and all live routes |
+| `app/auth.py` | Argon2 hashing (`pwdlib`), JWT creation (`PyJWT`), and the auth dependencies `get_optional_user`, `get_current_user`, `require_admin_or_first_user` |
 | `app/db.py` | `engine`, `SessionLocal`, `Base`, `get_db` dependency |
 | `app/models.py` | `Role`, `User`, `Artwork`, `ArtworkStatus` enum (pending/approved/rejected) |
 | `app/schemas.py` | Pydantic: `RoleResponse`, `UserCreate`, `UserResponse`, `LoginRequest`, `LoginResponse` |
-| `app/config.py` | `pydantic-settings` `Settings` (`app_name`, required `database_url`) |
+| `app/config.py` | `pydantic-settings` `Settings` (`app_name`, required `database_url` and `jwt_secret_key`, `jwt_algorithm`, `access_token_expire_minutes`) |
 
 ## Live endpoints (`app/main.py`)
 
 Routes are defined on an `APIRouter(prefix="/api")` with **no trailing slashes**. The paths follow the frontend contract ([saishatech18/premedia-frontend](https://github.com/saishatech18/premedia-frontend), checked out at `../premedia-frontend`). Its README lists the endpoints it calls and its `CLAUDE.md` sets the API conventions: auth under `/api/auth`, users under `/api/users`.
 
 - `GET /`: health message (on `app`, outside `/api`)
-- `GET /api/users`: lists users as `UserResponse` (`id, email, full_name, role_id, role {id, name, description}`)
-- `POST /api/users`: body `{email, password, role, full_name?}`, where `role` is a role **slug**. Returns 201, or 400 for a duplicate email or an unknown role.
-- `POST /api/auth/login`: body `{email, password}`. Returns `{user: UserResponse}` and **no token**, so the frontend (which requires `{token, user}`) can't log in until JWT is added.
+- `POST /api/auth/login` (public): body `{email, password}`. Returns `{token, user: UserResponse}`, or 401 `Invalid email or password`.
+- `GET /api/users` (any logged-in user): lists users as `UserResponse` (`id, email, full_name, role_id, role {id, name, description}`).
+- `POST /api/users` (admin): body `{email, password, role, full_name?}`, where `role` is a role **slug**. Returns 201, or 400 for a duplicate email or an unknown role. **Bootstrap:** when the users table is empty, no token is needed; the first user is created via curl or `/docs` and is assumed to be the admin (the role sent is not checked or forced).
 
 ## Behaviors and gotchas
 
 - **Tables are created at import time** by `models.Base.metadata.create_all(bind=engine)` in `main.py`. There are no migrations (no Alembic), so schema changes to existing tables are **not** applied automatically.
 - **Roles are seeded on startup** (deprecated `@app.on_event("startup")`) from `DEFAULT_ROLES` in `main.py`: `admin`, `project_manager`, `operator_retouching`, `operator_cgi`, `qc`, `client`. `Role.name` is the lowercase slug (the API identifier) and `Role.description` is the display label, which seeding keeps in sync. Role lookups are case-insensitive. Seeding never deletes roles; the old `designer`, `production` and `quality` roles were removed from Supabase by hand.
-- **Passwords are stored and compared in plaintext**, even though the column is `hashed_password`. Hashing (e.g. passlib/bcrypt) and JWT auth are planned but not done. There is no auth or role enforcement on any endpoint yet.
+- **Auth:** passwords are Argon2-hashed. Tokens are stateless HS256 JWTs carrying only `sub` (user id) and `exp` (default 8 hours); there is no refresh, logout or revocation. Each request reloads the user from the DB, so role changes and deleted users take effect immediately. Missing, invalid or expired tokens give 401 with `WWW-Authenticate: Bearer`; a wrong role gives 403. Access checks that don't need the user object go in the route's `dependencies=[...]`.
 - CORS on this branch is `allow_origins=["*"]` with `allow_credentials=True`. On `main` it was an explicit list (`http://localhost:3001`, `https://premedia.saishatech.in`).
 - `UserCreate.email` is a plain `str`, even though `email-validator` is installed (it could be `EmailStr`).
 - `Artwork` has a model but no endpoints yet.
@@ -56,14 +57,15 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 # .env (gitignored) must contain:
 #   DATABASE_URL=postgresql://user:pass@host:5432/dbname
+#   JWT_SECRET_KEY=<random, min 32 chars>
 uvicorn app.main:app --reload
 ```
 
-Startup fails if `DATABASE_URL` is unset/empty (pydantic `ValidationError`) or the DB is unreachable, because `create_engine` and `create_all` run at import time. There are no tests, linter config, or CI in the repo.
+Startup fails if `DATABASE_URL` or `JWT_SECRET_KEY` is unset or invalid (pydantic `ValidationError`) or the DB is unreachable, because `create_engine` and `create_all` run at import time. There are no tests, linter config, or CI in the repo.
 
 ## Roadmap (from README)
 
-1. Hash passwords and add JWT auth with role-checking dependencies.
+1. ~~Hash passwords and add JWT auth with role-checking dependencies.~~ Done.
 2. Add Artwork CRUD and the approval workflow (pending, then approved or rejected).
 3. Add pre-signed uploads to object storage.
 

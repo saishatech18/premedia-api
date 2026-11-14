@@ -83,7 +83,7 @@ On startup the app creates any missing tables and seeds the default roles. `.env
 
 ### 4. Try it
 
-On an empty database, create the first user, which must be the admin. No token is needed for this one request:
+On an empty database, create the first user, which must be the admin. No token is needed for this one request. The API doesn't check the role on this request, so make sure you send `"role":"admin"`; otherwise nobody can create users afterwards (see Troubleshooting).
 
 ```bash
 curl -X POST http://localhost:8000/api/users \
@@ -114,10 +114,12 @@ In Swagger UI (`/docs`), click **Authorize** and paste the token.
 |---|---|
 | `failed to resolve host '...@aws-0-...'` | Unencoded `@` (or other special character) in the password. URL-encode it. |
 | `password authentication failed for user "postgres"` | Wrong password. Use the database password; reset it in Project Settings → Database if unsure. |
+| `Can't load plugin: sqlalchemy.dialects:postgres` | The URL starts with `postgres://`. Change it to `postgresql://`. |
 | `Tenant or user not found` | Wrong project ref, region, or username in the URL. Copy it again from **Connect**. |
 | `No module named 'psycopg'` (or `jwt`, `pwdlib`) | Dependencies are out of date. Run `pip install -r requirements.txt`. |
 | `ValidationError` for `database_url` or `jwt_secret_key` on startup | The variable is missing from `.env`, or `JWT_SECRET_KEY` is shorter than 32 characters. |
 | `401 Not authenticated` when creating the first user | The users table isn't empty, so an admin token is required. |
+| `403 Only an admin can create users` | The token belongs to a non-admin. If the first user was created with a non-admin role, fix it in SQL: set that user's `role_id` to the `admin` role's id. |
 
 ---
 
@@ -136,7 +138,30 @@ Authenticated requests send `Authorization: Bearer <token>`. Tokens are JWTs tha
 
 Emails are case-insensitive: they are stored lowercased, and login matches any casing. Users are returned as `{id, email, full_name, role_id, role: {id, name, description}}`, where `role.name` is the slug and `role.description` is the display label.
 
-> ⚠️ **Not production-ready yet:** CORS allows all origins and there is no login rate limiting. See the milestones below.
+### Planned endpoints (called by the frontend, not built yet)
+
+The frontend's workflow modules (Intake, Allocation, Timeline, DAM, Operator Studio, QC, Client Proofing, Analytics) all run on **jobs**. Until these exist, the frontend gets a 404 from `GET /api/jobs` and shows the modules as "not available yet".
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/auth/me` | Current user, so the frontend can refresh its stored session |
+| `GET` | `/api/jobs` | List jobs |
+| `POST` | `/api/jobs` | Create a job (Intake) |
+| `POST` | `/api/jobs/{id}/<action>` | One endpoint per workflow action: assign, checkout/checkin, submit to QC, QC pin/approve/reject, client pin/sign-off/request changes |
+
+The frontend currently calls `PATCH /api/jobs/{id}/allocate` and a generic `PATCH /api/jobs/{id}/command`; both repos have agreed to move to one `POST` per action, with the server enforcing status transitions and roles and writing the audit trail.
+
+Job status pipeline expected by the frontend:
+
+```
+new ──assign──▶ active ──submit──▶ qc ──approve──▶ review ──sign-off──▶ approved
+                                   │ ▲               │
+                            reject │ │ resubmit      │ request changes
+                                   ▼ │               │
+                                  rework ◀───────────┘
+```
+
+> ⚠️ **Not production-ready yet:** CORS allows all origins, there is no login rate limiting, and any logged-in user (including `client`) can list every user. See the milestones below.
 
 ---
 
@@ -184,23 +209,58 @@ premedia-api/
 
 Tables are created automatically on startup (`create_all`). It only creates **missing** tables and never alters existing ones. There are no migrations yet.
 
+`artworks` has no endpoints yet. Its three-state status predates the frontend's job pipeline (`new → active → qc → review → approved`, plus `rework`), so the Jobs work will likely reuse it for job files and versions rather than as the workflow entity.
+
 **Supabase security:** Row Level Security (RLS) is enabled, with no policies, on all tables. This blocks Supabase's public REST API. The backend connects as `postgres`, which bypasses RLS. **Enable RLS on any new table you add.**
 
 ---
 
 ## Current Status & Next Milestones
 
-- [x] Frontend deployed & live on GitHub Pages
-- [x] Backend structure & PostgreSQL (psycopg 3) driver configured
-- [x] SQLAlchemy models for RBAC and artwork metadata
-- [x] Tables auto-created on startup
-- [x] Default roles seeded (`admin`, `project_manager`, `operator_retouching`, `operator_cgi`, `qc`, `client`)
+**Where things stand:** the foundation and authentication are done. With [premedia-frontend](https://github.com/saishatech18/premedia-frontend), login, the user list and Admin Console → Provision New User work end to end. Every workflow module is blocked on the Jobs API.
+
+### Done
+
+- [x] FastAPI app with all routes under `/api`, no trailing slashes, matching the frontend API client
+- [x] PostgreSQL on Supabase via the Session pooler, psycopg 3 driver, `pool_pre_ping`
+- [x] Configuration through `pydantic-settings` (`.env` / env vars), validated at startup
 - [x] Firestore code removed; PostgreSQL is the only datastore
-- [x] User creation (admin-only) & login endpoints
-- [x] RLS enabled on all Supabase tables
-- [x] Password hashing (Argon2)
-- [x] JWT authentication & role-based access checks
-- [ ] Restrict CORS to the frontend origins
-- [ ] Database migrations (Alembic)
-- [ ] Artwork endpoints & approval workflow
-- [ ] Object storage (S3/R2) pre-signed uploads
+- [x] SQLAlchemy models for roles, users and artwork metadata; tables auto-created on startup
+- [x] RLS enabled (no policies) on all Supabase tables, blocking Supabase's public REST API
+- [x] Six roles seeded to match the frontend (`admin`, `project_manager`, `operator_retouching`, `operator_cgi`, `qc`, `client`)
+- [x] Argon2 password hashing; JWT (HS256, 8-hour) Bearer auth; 401/403 handling the frontend relies on
+- [x] `POST /api/auth/login`, `GET /api/users`, `POST /api/users` (admin-only, first-user bootstrap)
+- [x] Input hardening: normalised emails, password length limits, duplicate-email race handled
+
+### Milestone 1: Hardening (before adding tables)
+
+- [ ] Database migrations with Alembic, baselined on the current Supabase schema
+- [ ] Test suite (pytest + `TestClient` against a throwaway Postgres); stop running `create_all` at import time so tests can import the app
+- [ ] Reusable `require_roles(...)` dependency for role-gated routes
+- [ ] Force the bootstrap (first) user's role to `admin`
+- [ ] `GET /api/auth/me` so the frontend can refresh the stored session user
+- [ ] Decide whether `client` users may list all users (`GET /api/users`)
+
+### Milestone 2: Jobs API and approval workflow (unblocks the frontend)
+
+- [ ] Models for jobs, versions, QC/client pins and an audit trail, with user-id foreign keys for operator and project manager (the frontend matches by display name today)
+- [ ] `GET /api/jobs`, `POST /api/jobs`, `GET /api/jobs/{id}`, with server-assigned ids
+- [ ] One `POST /api/jobs/{id}/<action>` per workflow action, enforcing status transitions (409) and roles (403) server-side
+- [ ] Update the frontend API client from `PATCH .../allocate` and `PATCH .../command` to the new endpoints
+
+### Milestone 3: Object storage
+
+- [ ] Pre-signed upload/download URLs (S3/R2/GCS) for job files and versions; the database keeps only metadata and `file_url`
+- [ ] Back the DAM module with real file metadata (format, size, versions)
+
+### Milestone 4: User management
+
+- [ ] Update and deactivate users; change and reset passwords
+- [ ] Decide on `/api/auth/register` (hidden in the frontend): admin-only, or self-registration with a low-privilege default role
+
+### Milestone 5: Production deployment
+
+- [ ] Host the API and route `/api/*` from the frontend's domain (or set `VITE_API_BASE`)
+- [ ] Restrict CORS to the frontend origins (configured in `Settings`)
+- [ ] Login rate limiting
+- [ ] CI: lint and tests on pull requests

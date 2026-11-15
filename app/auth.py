@@ -6,13 +6,16 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pwdlib import PasswordHash
+from pwdlib.hashers.argon2 import Argon2Hasher
+from pwdlib.hashers.bcrypt import BcryptHasher
 from sqlalchemy.orm import Session
 
 from . import models
 from .config import settings
 from .db import get_db
 
-password_hash = PasswordHash.recommended()  # Argon2
+# password_hash = PasswordHash.recommended()  # Argon2 Old code
+password_hash = PasswordHash((Argon2Hasher(), BcryptHasher()))
 
 # Verified against when the email is unknown, so login takes the same time either way
 DUMMY_HASH = password_hash.hash("dummy-password")

@@ -3,8 +3,12 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 
 from .config import settings
 
-# Establish the core connection to Supabase
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+# Establish the core connection to Supabase (disable prepared statements for transaction pooler)
+engine = create_engine(
+    settings.database_url,
+    connect_args={"prepare_threshold": None},
+    pool_pre_ping=True,
+)
 
 # Create a session factory to handle individual database transactions
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

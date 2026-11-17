@@ -53,7 +53,50 @@ class LoginResponse(BaseModel):
 
 
 # =====================================================================
-# 2. PREMEDIA JOB / ARTWORK SCHEMAS (Aligned with public.artworks)
+# 2. COMPLEXITY TIERS SCHEMAS (Database-driven Pricing & SLA Matrix)
+# =====================================================================
+
+class ComplexityTierCreate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    slug: Optional[str] = None
+    label: str
+    sla_hours: int = Field(default=24, alias="slaHours")
+    est_hours: float = Field(default=2.0, alias="estHours")
+    rate: float = 0.0
+    color: str = "emerald"
+    is_custom: bool = Field(default=False, alias="isCustom")
+    sort_order: int = Field(default=0, alias="sortOrder")
+
+
+class ComplexityTierUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    label: Optional[str] = None
+    sla_hours: Optional[int] = Field(default=None, alias="slaHours")
+    est_hours: Optional[float] = Field(default=None, alias="estHours")
+    rate: Optional[float] = None
+    color: Optional[str] = None
+    is_custom: Optional[bool] = Field(default=None, alias="isCustom")
+    sort_order: Optional[int] = Field(default=None, alias="sortOrder")
+
+
+class ComplexityTierResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: int
+    slug: str
+    label: str
+    sla_hours: int
+    est_hours: float
+    rate: float
+    color: str
+    is_custom: bool
+    sort_order: int
+
+
+# =====================================================================
+# 3. PREMEDIA JOB / ARTWORK SCHEMAS (Aligned with public.artworks)
 # =====================================================================
 
 class JobCreate(BaseModel):

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Float, String, ForeignKey, DateTime, Enum, JSON
+from sqlalchemy import Boolean, Column, Integer, Float, String, ForeignKey, DateTime, Enum, JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
@@ -31,7 +31,22 @@ class User(Base):
     artworks = relationship("Artwork", back_populates="owner")
 
 
-# 3. ARTWORK STATUS (Matches Postgres artworkstatus enum values)
+# 3. COMPLEXITY TIERS TABLE (Admin-configurable timelines, hours & rates)
+class ComplexityTier(Base):
+    __tablename__ = "complexity_tiers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    slug = Column(String, unique=True, index=True, nullable=False)
+    label = Column(String, nullable=False)
+    sla_hours = Column(Integer, default=24, nullable=False)
+    est_hours = Column(Float, default=2.0, nullable=False)
+    rate = Column(Float, default=2500.0, nullable=False)
+    color = Column(String, default="emerald", nullable=False)
+    is_custom = Column(Boolean, default=False, nullable=False)
+    sort_order = Column(Integer, default=0, nullable=False)
+
+
+# 4. ARTWORK STATUS (Matches Postgres artworkstatus enum values)
 class ArtworkStatus(enum.Enum):
     NEW = "new"
     ACTIVE = "active"
@@ -43,7 +58,7 @@ class ArtworkStatus(enum.Enum):
     REJECTED = "REJECTED"
 
 
-# 4. ARTWORKS TABLE (Complete Premedia Hub Pipeline & DAM Metadata)
+# 5. ARTWORKS TABLE (Complete Premedia Hub Pipeline & DAM Metadata)
 class Artwork(Base):
     __tablename__ = "artworks"
 

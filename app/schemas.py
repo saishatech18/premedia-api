@@ -153,3 +153,10 @@ class JobResponse(BaseModel):
     preflight_checks: Optional[Dict[str, bool]] = Field(default_factory=dict)
     skill_required: Optional[str] = "Packaging / Dieline"
     allocation_notes: Optional[str] = ""
+
+    class JobCommand(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    commandName: str
+    payload: Dict = Field(default_factory=dict)
+    auditDetails: Optional[str] = None

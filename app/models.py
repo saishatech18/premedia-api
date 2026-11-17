@@ -1,18 +1,18 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Enum
+from sqlalchemy import Column, Integer, Float, String, ForeignKey, DateTime, Enum, JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
 from app.db import Base
+
 
 # 1. ROLES TABLE (For RBAC)
 class Role(Base):
     __tablename__ = "roles"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True, nullable=False) # slug, e.g., "admin", "operator_retouching", "client"
+    name = Column(String, unique=True, index=True, nullable=False)
     description = Column(String, nullable=True)
 
-    # Link back to the users who have this role
     users = relationship("User", back_populates="role")
 
 
@@ -22,39 +22,78 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False) # Never store plain text passwords!
+    hashed_password = Column(String, nullable=False)
     full_name = Column(String, nullable=True)
-    
-    # Foreign Key: This links the user directly to a specific role ID
+
     role_id = Column(Integer, ForeignKey("roles.id"))
-    
-    # Relationships
+
     role = relationship("Role", back_populates="users")
     artworks = relationship("Artwork", back_populates="owner")
 
 
-# 3. ARTWORK STATUS (For the approval workflow)
+# 3. ARTWORK STATUS (Matches Postgres artworkstatus enum values)
 class ArtworkStatus(enum.Enum):
-    PENDING = "pending"
+    NEW = "new"
+    ACTIVE = "active"
+    REWORK = "rework"
+    QC = "qc"
+    REVIEW = "review"
     APPROVED = "approved"
-    REJECTED = "rejected"
+    PENDING = "PENDING"
+    REJECTED = "REJECTED"
 
 
-# 4. ARTWORKS TABLE (DAM Metadata)
+# 4. ARTWORKS TABLE (Complete Premedia Hub Pipeline & DAM Metadata)
 class Artwork(Base):
     __tablename__ = "artworks"
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, index=True, nullable=False)
-    
-    # This is the golden rule: We store the URL to the massive S3 file, NOT the file itself!
-    file_url = Column(String, nullable=False) 
+    file_url = Column(String, nullable=False, default="")
     file_size_mb = Column(Integer, nullable=True)
-    status = Column(Enum(ArtworkStatus), default=ArtworkStatus.PENDING)
+    status = Column(
+        Enum(
+            ArtworkStatus,
+            values_callable=lambda obj: [e.value for e in obj],
+            name="artworkstatus",
+        ),
+        default=ArtworkStatus.NEW,
+        nullable=False,
+    )
     created_at = Column(DateTime, default=datetime.utcnow)
-    
-    # Foreign Key: Links the artwork to the user who uploaded it
-    owner_id = Column(Integer, ForeignKey("users.id"))
-    
-    # Relationship
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # Assignment & Notes
+    assigned_to = Column(String, default="Unassigned", nullable=True)
+    notes = Column(String, default="", nullable=True)
+    allocation_notes = Column(String, default="", nullable=True)
+
+    # Project / Campaign Grouping
+    project_code = Column(String, index=True, default="", nullable=True)
+    project_name = Column(String, default="", nullable=True)
+
+    # Client & SKU Identification
+    client_name = Column(String, index=True, default="", nullable=True)
+    brand_name = Column(String, default="", nullable=True)
+    sku_code = Column(String, default="", nullable=True)
+
+    # Complexity Tier & Commercial Billing
+    complexity_tier = Column(String, default="standard", nullable=True)
+    sla_hours = Column(Integer, default=24, nullable=True)
+    estimated_hours = Column(Float, default=2.0, nullable=True)
+    billing_currency = Column(String, default="INR", nullable=True)
+    billable_amount = Column(Float, default=2500.0, nullable=True)
+    billing_status = Column(String, default="unbilled", nullable=True)
+
+    # Technical Press & Preflight Specs
+    print_process = Column(String, default="Offset Litho", nullable=True)
+    color_profile = Column(String, default="CMYK + Spot (Pantone)", nullable=True)
+    trim_size = Column(String, default="", nullable=True)
+    bleed_mm = Column(Float, default=3.0, nullable=True)
+    priority = Column(String, default="normal", nullable=True)
+    sla_due_date = Column(DateTime, nullable=True)
+    preflight_status = Column(String, default="passed", nullable=True)
+    preflight_checks = Column(JSON, default=dict, nullable=True)
+    skill_required = Column(String, default="Packaging / Dieline", nullable=True)
+
     owner = relationship("User", back_populates="artworks")

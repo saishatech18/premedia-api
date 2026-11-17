@@ -7,22 +7,20 @@ def _normalize_email(value):
     return value.strip().lower() if isinstance(value, str) else value
 
 
-# Emails are stored and looked up trimmed and lowercased
 NormalizedEmail = Annotated[EmailStr, BeforeValidator(_normalize_email)]
 LoginEmail = Annotated[str, BeforeValidator(_normalize_email)]
 
-# The upper bound also limits hashing work on the public login endpoint
 PASSWORD_MAX_LENGTH = 128
 
 
 # =====================================================================
-# 1. AUTH, ROLE & USER SCHEMAS (Existing - Intact)
+# 1. AUTH, ROLE & USER SCHEMAS
 # =====================================================================
 
 class RoleResponse(BaseModel):
     id: int
-    name: str  # stable slug, e.g. "operator_retouching"
-    description: Optional[str] = None  # display label, e.g. "Operator (Retouching)"
+    name: str
+    description: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -30,7 +28,7 @@ class RoleResponse(BaseModel):
 class UserCreate(BaseModel):
     email: NormalizedEmail
     password: str = Field(min_length=8, max_length=PASSWORD_MAX_LENGTH)
-    role: str  # role slug
+    role: str
     full_name: Optional[str] = None
 
 
@@ -61,7 +59,6 @@ class LoginResponse(BaseModel):
 class JobCreate(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    # Core public.artworks columns
     title: str
     file_url: str = Field(default="", alias="fileUrl")
     file_size_mb: Optional[int] = Field(default=None, alias="fileSizeMb")
@@ -70,16 +67,13 @@ class JobCreate(BaseModel):
     assigned_to: str = Field(default="Unassigned", alias="assignedTo")
     notes: str = ""
 
-    # Project / Campaign Grouping
     project_code: str = Field(default="", alias="projectCode")
     project_name: str = Field(default="", alias="projectName")
 
-    # Client & Artwork Identification
     client_name: str = Field(default="", alias="clientName")
     brand_name: str = Field(default="", alias="brandName")
     sku_code: str = Field(default="", alias="skuCode")
 
-    # Complexity Tier & Commercial Billing (standard | medium | complex | custom)
     complexity_tier: str = Field(default="standard", alias="complexityTier")
     sla_hours: int = Field(default=24, alias="slaHours")
     estimated_hours: float = Field(default=2.0, alias="estimatedHours")
@@ -87,7 +81,6 @@ class JobCreate(BaseModel):
     billable_amount: float = Field(default=2500.0, alias="billableAmount")
     billing_status: str = Field(default="unbilled", alias="billingStatus")
 
-    # Technical Press & Preflight Specs
     print_process: str = Field(default="Offset Litho", alias="printProcess")
     color_profile: str = Field(default="CMYK + Spot (Pantone)", alias="colorProfile")
     trim_size: str = Field(default="", alias="trimSize")
@@ -125,16 +118,13 @@ class JobResponse(BaseModel):
     assigned_to: Optional[str] = "Unassigned"
     notes: Optional[str] = ""
 
-    # Project / Campaign Grouping
     project_code: Optional[str] = ""
     project_name: Optional[str] = ""
 
-    # Client & Artwork Identification
     client_name: Optional[str] = ""
     brand_name: Optional[str] = ""
     sku_code: Optional[str] = ""
 
-    # Complexity Tier & Commercial Billing
     complexity_tier: Optional[str] = "standard"
     sla_hours: Optional[int] = 24
     estimated_hours: Optional[float] = 2.0
@@ -142,7 +132,6 @@ class JobResponse(BaseModel):
     billable_amount: Optional[float] = 2500.0
     billing_status: Optional[str] = "unbilled"
 
-    # Technical Press & Preflight Specs
     print_process: Optional[str] = "Offset Litho"
     color_profile: Optional[str] = "CMYK + Spot (Pantone)"
     trim_size: Optional[str] = ""
@@ -154,7 +143,8 @@ class JobResponse(BaseModel):
     skill_required: Optional[str] = "Packaging / Dieline"
     allocation_notes: Optional[str] = ""
 
-    class JobCommand(BaseModel):
+
+class JobCommand(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     commandName: str

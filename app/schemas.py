@@ -1,5 +1,6 @@
-from pydantic import BaseModel, BeforeValidator, EmailStr, Field
-from typing import Annotated, Optional
+from datetime import datetime
+from typing import Annotated, Dict, Optional
+from pydantic import BaseModel, BeforeValidator, ConfigDict, EmailStr, Field
 
 
 def _normalize_email(value):
@@ -14,17 +15,18 @@ LoginEmail = Annotated[str, BeforeValidator(_normalize_email)]
 PASSWORD_MAX_LENGTH = 128
 
 
-# Schema for role output
+# =====================================================================
+# 1. AUTH, ROLE & USER SCHEMAS (Existing - Intact)
+# =====================================================================
+
 class RoleResponse(BaseModel):
     id: int
     name: str  # stable slug, e.g. "operator_retouching"
     description: Optional[str] = None  # display label, e.g. "Operator (Retouching)"
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-# Schema for creating a user
 class UserCreate(BaseModel):
     email: NormalizedEmail
     password: str = Field(min_length=8, max_length=PASSWORD_MAX_LENGTH)
@@ -32,7 +34,6 @@ class UserCreate(BaseModel):
     full_name: Optional[str] = None
 
 
-# Schema for returning user data with role details
 class UserResponse(BaseModel):
     id: int
     email: str
@@ -40,17 +41,115 @@ class UserResponse(BaseModel):
     role_id: Optional[int] = None
     role: Optional[RoleResponse] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-# Schema for login credentials
 class LoginRequest(BaseModel):
     email: LoginEmail
     password: str = Field(max_length=PASSWORD_MAX_LENGTH)
 
 
-# Schema for a successful login
 class LoginResponse(BaseModel):
     token: str
     user: UserResponse
+
+
+# =====================================================================
+# 2. PREMEDIA JOB / ARTWORK SCHEMAS (Aligned with public.artworks)
+# =====================================================================
+
+class JobCreate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    # Core public.artworks columns
+    title: str
+    file_url: str = Field(default="", alias="fileUrl")
+    file_size_mb: Optional[int] = Field(default=None, alias="fileSizeMb")
+    status: str = "new"
+    owner_id: Optional[int] = Field(default=None, alias="ownerId")
+    assigned_to: str = Field(default="Unassigned", alias="assignedTo")
+    notes: str = ""
+
+    # Project / Campaign Grouping
+    project_code: str = Field(default="", alias="projectCode")
+    project_name: str = Field(default="", alias="projectName")
+
+    # Client & Artwork Identification
+    client_name: str = Field(default="", alias="clientName")
+    brand_name: str = Field(default="", alias="brandName")
+    sku_code: str = Field(default="", alias="skuCode")
+
+    # Complexity Tier & Commercial Billing (standard | medium | complex | custom)
+    complexity_tier: str = Field(default="standard", alias="complexityTier")
+    sla_hours: int = Field(default=24, alias="slaHours")
+    estimated_hours: float = Field(default=2.0, alias="estimatedHours")
+    billing_currency: str = Field(default="INR", alias="billingCurrency")
+    billable_amount: float = Field(default=2500.0, alias="billableAmount")
+    billing_status: str = Field(default="unbilled", alias="billingStatus")
+
+    # Technical Press & Preflight Specs
+    print_process: str = Field(default="Offset Litho", alias="printProcess")
+    color_profile: str = Field(default="CMYK + Spot (Pantone)", alias="colorProfile")
+    trim_size: str = Field(default="", alias="trimSize")
+    bleed_mm: float = Field(default=3.0, alias="bleedMm")
+    priority: str = "normal"
+    sla_due_date: Optional[datetime] = Field(default=None, alias="slaDueDate")
+    preflight_status: str = Field(default="passed", alias="preflightStatus")
+    preflight_checks: Dict[str, bool] = Field(default_factory=dict, alias="preflightChecks")
+    skill_required: str = Field(default="Packaging / Dieline", alias="skillRequired")
+
+
+class JobAllocate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    owner_id: Optional[int] = Field(default=None, alias="ownerId")
+    assigned_to: str = Field(..., alias="assignedTo")
+    complexity_tier: Optional[str] = Field(default=None, alias="complexityTier")
+    estimated_hours: float = Field(default=2.0, alias="estimatedHours")
+    billable_amount: Optional[float] = Field(default=None, alias="billableAmount")
+    priority: Optional[str] = None
+    allocation_notes: str = Field(default="", alias="allocationNotes")
+    status: str = "active"
+
+
+class JobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: int
+    title: str
+    file_url: Optional[str] = ""
+    file_size_mb: Optional[int] = None
+    status: str
+    created_at: Optional[datetime] = None
+    owner_id: Optional[int] = None
+    assigned_to: Optional[str] = "Unassigned"
+    notes: Optional[str] = ""
+
+    # Project / Campaign Grouping
+    project_code: Optional[str] = ""
+    project_name: Optional[str] = ""
+
+    # Client & Artwork Identification
+    client_name: Optional[str] = ""
+    brand_name: Optional[str] = ""
+    sku_code: Optional[str] = ""
+
+    # Complexity Tier & Commercial Billing
+    complexity_tier: Optional[str] = "standard"
+    sla_hours: Optional[int] = 24
+    estimated_hours: Optional[float] = 2.0
+    billing_currency: Optional[str] = "INR"
+    billable_amount: Optional[float] = 2500.0
+    billing_status: Optional[str] = "unbilled"
+
+    # Technical Press & Preflight Specs
+    print_process: Optional[str] = "Offset Litho"
+    color_profile: Optional[str] = "CMYK + Spot (Pantone)"
+    trim_size: Optional[str] = ""
+    bleed_mm: Optional[float] = 3.0
+    priority: Optional[str] = "normal"
+    sla_due_date: Optional[datetime] = None
+    preflight_status: Optional[str] = "pending"
+    preflight_checks: Optional[Dict[str, bool]] = Field(default_factory=dict)
+    skill_required: Optional[str] = "Packaging / Dieline"
+    allocation_notes: Optional[str] = ""

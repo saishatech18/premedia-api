@@ -208,7 +208,7 @@ def allocate_job(job_id: int, payload: schemas.JobAllocate, db: Session = Depend
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
 
-    if payload.owner_id is not None:
+    if "owner_id" in payload.model_fields_set:
         job.owner_id = payload.owner_id
     job.assigned_to = payload.assigned_to
     if payload.complexity_tier:

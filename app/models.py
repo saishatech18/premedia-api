@@ -58,7 +58,7 @@ class ArtworkStatus(enum.Enum):
     REJECTED = "REJECTED"
 
 
-# 5. ARTWORKS TABLE (Complete Premedia Hub Pipeline & DAM Metadata)
+# 5. ARTWORKS TABLE (Complete Premedia Hub Pipeline, DAM & Time Tracking Metadata)
 class Artwork(Base):
     __tablename__ = "artworks"
 
@@ -92,10 +92,13 @@ class Artwork(Base):
     brand_name = Column(String, default="", nullable=True)
     sku_code = Column(String, default="", nullable=True)
 
-    # Complexity Tier & Commercial Billing
+    # Complexity Tier, Commercial Billing & Actual Effort Tracking
     complexity_tier = Column(String, default="standard", nullable=True)
     sla_hours = Column(Integer, default=24, nullable=True)
     estimated_hours = Column(Float, default=2.0, nullable=True)
+    actual_hours = Column(Float, default=0.0, nullable=True)
+    work_started_at = Column(DateTime, nullable=True)
+    operator_time_logs = Column(JSON, default=dict, nullable=True)
     billing_currency = Column(String, default="INR", nullable=True)
     billable_amount = Column(Float, default=2500.0, nullable=True)
     billing_status = Column(String, default="unbilled", nullable=True)

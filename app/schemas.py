@@ -171,6 +171,9 @@ class JobResponse(BaseModel):
     complexity_tier: Optional[str] = "standard"
     sla_hours: Optional[int] = 24
     estimated_hours: Optional[float] = 2.0
+    actual_hours: Optional[float] = 0.0
+    work_started_at: Optional[datetime] = None
+    operator_time_logs: Optional[Dict[str, float]] = Field(default_factory=dict)
     billing_currency: Optional[str] = "INR"
     billable_amount: Optional[float] = 2500.0
     billing_status: Optional[str] = "unbilled"

@@ -1,10 +1,11 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 import re
 from typing import List
 
 from fastapi import APIRouter, FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -12,6 +13,8 @@ from . import auth, models, schemas
 from .db import SessionLocal, engine, get_db
 
 models.Base.metadata.create_all(bind=engine)
+
+IST = timezone(timedelta(hours=5, minutes=30))
 
 DEFAULT_ROLES = {
     "admin": "Administrator",
@@ -66,6 +69,19 @@ DEFAULT_COMPLEXITY_TIERS = [
 ]
 
 
+def ensure_artwork_time_columns():
+    with engine.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE artworks ADD COLUMN IF NOT EXISTS actual_hours DOUBLE PRECISION DEFAULT 0.0")
+        )
+        conn.execute(
+            text("ALTER TABLE artworks ADD COLUMN IF NOT EXISTS work_started_at TIMESTAMP NULL")
+        )
+        conn.execute(
+            text("ALTER TABLE artworks ADD COLUMN IF NOT EXISTS operator_time_logs JSONB DEFAULT '{}'::jsonb")
+        )
+
+
 def seed_roles():
     with SessionLocal() as db:
         for role_name, label in DEFAULT_ROLES.items():
@@ -92,6 +108,7 @@ def seed_complexity_tiers():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    ensure_artwork_time_columns()
     seed_roles()
     seed_complexity_tiers()
     yield
@@ -110,8 +127,8 @@ app.add_middleware(
 api = APIRouter(prefix="/api")
 
 
-def _slugify(text: str) -> str:
-    clean = re.sub(r"[^a-z0-9]+", "_", text.strip().lower()).strip("_")
+def _slugify(text_val: str) -> str:
+    clean = re.sub(r"[^a-z0-9]+", "_", text_val.strip().lower()).strip("_")
     return clean or "tier"
 
 
@@ -123,8 +140,63 @@ def _parse_status(raw: str) -> models.ArtworkStatus:
     return models.ArtworkStatus.NEW
 
 
+def _compute_shift_hours(start_utc: datetime, end_utc: datetime) -> float:
+    """
+    Calculates working hours in IST studio shift (09:30 - 18:30 Mon-Sat),
+    automatically excluding 13:00 - 14:00 lunch break, overnight hours, and Sundays.
+    """
+    if not start_utc or not end_utc or end_utc <= start_utc:
+        return 0.0
+
+    start_ist = start_utc.replace(tzinfo=timezone.utc).astimezone(IST)
+    end_ist = end_utc.replace(tzinfo=timezone.utc).astimezone(IST)
+
+    total_seconds = 0.0
+    cursor_day = start_ist.date()
+    last_day = end_ist.date()
+
+    while cursor_day <= last_day:
+        if cursor_day.weekday() != 6:  # Exclude Sunday (6)
+            morning_start = datetime(cursor_day.year, cursor_day.month, cursor_day.day, 9, 30, tzinfo=IST)
+            morning_end = datetime(cursor_day.year, cursor_day.month, cursor_day.day, 13, 0, tzinfo=IST)
+            afternoon_start = datetime(cursor_day.year, cursor_day.month, cursor_day.day, 14, 0, tzinfo=IST)
+            afternoon_end = datetime(cursor_day.year, cursor_day.month, cursor_day.day, 18, 30, tzinfo=IST)
+
+            for seg_start, seg_end in ((morning_start, morning_end), (afternoon_start, afternoon_end)):
+                overlap_start = max(start_ist, seg_start)
+                overlap_end = min(end_ist, seg_end)
+                if overlap_end > overlap_start:
+                    total_seconds += (overlap_end - overlap_start).total_seconds()
+
+        cursor_day += timedelta(days=1)
+
+    return round(total_seconds / 3600.0, 2)
+
+
+def _credit_operator_hours(job: models.Artwork, session_hours: float, actor_key: str = ""):
+    if session_hours <= 0:
+        return
+    logs = dict(job.operator_time_logs or {})
+    key = (actor_key or "").strip()
+    if not key:
+        raw_assigned = (job.assigned_to or "").strip()
+        if raw_assigned and raw_assigned.lower() != "unassigned":
+            key = raw_assigned.split(",")[0].strip()
+    if key:
+        logs[key] = round(float(logs.get(key, 0.0)) + session_hours, 2)
+        job.operator_time_logs = logs
+
+
 def _serialize_job(job: models.Artwork) -> dict:
     data = schemas.JobResponse.model_validate(job).model_dump()
+    now_utc = datetime.utcnow()
+    live_session_hours = (
+        _compute_shift_hours(job.work_started_at, now_utc)
+        if job.work_started_at and job.status in (models.ArtworkStatus.ACTIVE, models.ArtworkStatus.REWORK)
+        else 0.0
+    )
+    banked_hours = float(job.actual_hours or 0.0)
+
     data["assignedTo"] = job.assigned_to or "Unassigned"
     data["fileUrl"] = job.file_url or ""
     data["projectCode"] = job.project_code or ""
@@ -132,6 +204,11 @@ def _serialize_job(job: models.Artwork) -> dict:
     data["clientName"] = job.client_name or ""
     data["complexityTier"] = job.complexity_tier or "standard"
     data["estimatedHours"] = job.estimated_hours or 2.0
+    data["actualHours"] = banked_hours
+    data["liveSessionHours"] = live_session_hours
+    data["effectiveActualHours"] = round(banked_hours + live_session_hours, 2)
+    data["workStartedAt"] = job.work_started_at.isoformat() + "Z" if job.work_started_at else None
+    data["operatorTimeLogs"] = job.operator_time_logs or {}
     data["billableAmount"] = job.billable_amount or 0.0
     return data
 
@@ -323,12 +400,13 @@ def get_jobs(db: Session = Depends(get_db)):
 )
 def create_job(job: schemas.JobCreate, db: Session = Depends(get_db)):
     due_naive = job.sla_due_date.replace(tzinfo=None) if job.sla_due_date else None
+    parsed_status = _parse_status(job.status)
 
     new_job = models.Artwork(
         title=job.title,
         file_url=job.file_url or "",
         file_size_mb=job.file_size_mb,
-        status=_parse_status(job.status),
+        status=parsed_status,
         owner_id=job.owner_id,
         assigned_to=job.assigned_to or "Unassigned",
         notes=job.notes or "",
@@ -340,6 +418,9 @@ def create_job(job: schemas.JobCreate, db: Session = Depends(get_db)):
         complexity_tier=job.complexity_tier or "standard",
         sla_hours=job.sla_hours,
         estimated_hours=job.estimated_hours,
+        actual_hours=0.0,
+        work_started_at=datetime.utcnow() if parsed_status == models.ArtworkStatus.ACTIVE else None,
+        operator_time_logs={},
         billing_currency=job.billing_currency or "INR",
         billable_amount=job.billable_amount,
         billing_status=job.billing_status or "unbilled",
@@ -365,6 +446,16 @@ def allocate_job(job_id: int, payload: schemas.JobAllocate, db: Session = Depend
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
 
+    now_utc = datetime.utcnow()
+    is_unallocating = (payload.assigned_to or "").strip().lower() in ("", "unassigned", "none")
+
+    # Bank any active session before changing operator or unallocating
+    if job.work_started_at and job.status in (models.ArtworkStatus.ACTIVE, models.ArtworkStatus.REWORK):
+        elapsed = _compute_shift_hours(job.work_started_at, now_utc)
+        job.actual_hours = round(float(job.actual_hours or 0.0) + elapsed, 2)
+        _credit_operator_hours(job, elapsed)
+        job.work_started_at = None
+
     if "owner_id" in payload.model_fields_set:
         job.owner_id = payload.owner_id
     job.assigned_to = payload.assigned_to
@@ -381,6 +472,12 @@ def allocate_job(job_id: int, payload: schemas.JobAllocate, db: Session = Depend
     if payload.status:
         job.status = _parse_status(payload.status)
 
+    # Zero-button auto-clock: start shift timer automatically once dispatched
+    if not is_unallocating and job.status in (models.ArtworkStatus.ACTIVE, models.ArtworkStatus.REWORK):
+        job.work_started_at = now_utc
+    elif is_unallocating:
+        job.work_started_at = None
+
     db.commit()
     db.refresh(job)
     return _serialize_job(job)
@@ -392,11 +489,55 @@ def command_job(job_id: int, cmd: schemas.JobCommand, db: Session = Depends(get_
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
 
+    now_utc = datetime.utcnow()
     data = cmd.payload or {}
+    actor_email = data.get("logged_by") or data.get("loggedBy") or ""
+
+    # 1. Handle direct session / handoff hours logging (used at QC handoff or sequential step handoff)
+    if "session_hours" in data or "sessionHours" in data:
+        raw_session = data.get("session_hours") if "session_hours" in data else data.get("sessionHours")
+        session_hrs = max(0.0, float(raw_session or 0.0))
+        job.actual_hours = round(float(job.actual_hours or 0.0) + session_hrs, 2)
+        _credit_operator_hours(job, session_hrs, actor_email)
+        job.work_started_at = now_utc if job.status in (models.ArtworkStatus.ACTIVE, models.ArtworkStatus.REWORK) else None
+    elif "actual_hours" in data or "actualHours" in data:
+        raw_total = data.get("actual_hours") if "actual_hours" in data else data.get("actualHours")
+        new_total = max(0.0, float(raw_total or 0.0))
+        delta = round(new_total - float(job.actual_hours or 0.0), 2)
+        job.actual_hours = new_total
+        if delta > 0:
+            _credit_operator_hours(job, delta, actor_email)
+        job.work_started_at = None
+
+    # 2. Handle status transition & zero-button shift timer lifecycle
     if "status" in data and data["status"]:
-        job.status = _parse_status(data["status"])
-        if str(data["status"]).lower() == "approved":
+        next_status = _parse_status(data["status"])
+
+        # Moving out of active/rework into QC/review/approved: auto-bank any unlogged shift elapsed time
+        if (
+            next_status in (models.ArtworkStatus.QC, models.ArtworkStatus.REVIEW, models.ArtworkStatus.APPROVED)
+            and job.work_started_at
+            and "session_hours" not in data
+            and "sessionHours" not in data
+            and "actual_hours" not in data
+            and "actualHours" not in data
+        ):
+            auto_elapsed = _compute_shift_hours(job.work_started_at, now_utc)
+            job.actual_hours = round(float(job.actual_hours or 0.0) + auto_elapsed, 2)
+            _credit_operator_hours(job, auto_elapsed, actor_email)
+            job.work_started_at = None
+
+        # Entering active or rework (e.g. rejected back from QC/Client): start shift clock automatically
+        if next_status in (models.ArtworkStatus.ACTIVE, models.ArtworkStatus.REWORK):
+            if not job.work_started_at:
+                job.work_started_at = now_utc
+        elif next_status in (models.ArtworkStatus.QC, models.ArtworkStatus.REVIEW, models.ArtworkStatus.APPROVED, models.ArtworkStatus.NEW):
+            job.work_started_at = None
+
+        job.status = next_status
+        if next_status == models.ArtworkStatus.APPROVED:
             job.billing_status = "ready_to_invoice"
+
     if "file_url" in data and data["file_url"]:
         job.file_url = data["file_url"]
     elif "fileUrl" in data and data["fileUrl"]:

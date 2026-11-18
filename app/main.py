@@ -5,6 +5,7 @@ from typing import List
 
 from fastapi import APIRouter, FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -67,6 +68,16 @@ DEFAULT_COMPLEXITY_TIERS = [
         "sort_order": 4,
     },
 ]
+
+
+class BulkJobAllocate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    job_ids: List[int] = Field(..., alias="jobIds")
+    owner_id: int | None = Field(default=None, alias="ownerId")
+    assigned_to: str = Field(..., alias="assignedTo")
+    priority: str | None = None
+    allocation_notes: str = Field(default="", alias="allocationNotes")
 
 
 def ensure_artwork_time_columns():
@@ -440,6 +451,42 @@ def create_job(job: schemas.JobCreate, db: Session = Depends(get_db)):
     return _serialize_job(new_job)
 
 
+@api.patch("/jobs/bulk-allocate", dependencies=[Depends(auth.get_current_user)])
+def bulk_allocate_jobs(payload: BulkJobAllocate, db: Session = Depends(get_db)):
+    if not payload.job_ids:
+        return []
+
+    jobs = db.query(models.Artwork).filter(models.Artwork.id.in_(payload.job_ids)).all()
+    now_utc = datetime.utcnow()
+    is_unallocating = (payload.assigned_to or "").strip().lower() in ("", "unassigned", "none")
+
+    for job in jobs:
+        if job.work_started_at and job.status in (models.ArtworkStatus.ACTIVE, models.ArtworkStatus.REWORK):
+            elapsed = _compute_shift_hours(job.work_started_at, now_utc)
+            job.actual_hours = round(float(job.actual_hours or 0.0) + elapsed, 2)
+            _credit_operator_hours(job, elapsed)
+            job.work_started_at = None
+
+        if "owner_id" in payload.model_fields_set:
+            job.owner_id = payload.owner_id
+        job.assigned_to = payload.assigned_to
+        if payload.priority:
+            job.priority = payload.priority
+        if payload.allocation_notes is not None:
+            job.allocation_notes = payload.allocation_notes
+
+        if is_unallocating:
+            job.status = models.ArtworkStatus.NEW
+            job.work_started_at = None
+        elif job.status == models.ArtworkStatus.NEW:
+            job.work_started_at = None
+
+    db.commit()
+    for job in jobs:
+        db.refresh(job)
+    return [_serialize_job(j) for j in jobs]
+
+
 @api.patch("/jobs/{job_id}/allocate", dependencies=[Depends(auth.get_current_user)])
 def allocate_job(job_id: int, payload: schemas.JobAllocate, db: Session = Depends(get_db)):
     job = db.query(models.Artwork).filter(models.Artwork.id == job_id).first()
@@ -449,7 +496,7 @@ def allocate_job(job_id: int, payload: schemas.JobAllocate, db: Session = Depend
     now_utc = datetime.utcnow()
     is_unallocating = (payload.assigned_to or "").strip().lower() in ("", "unassigned", "none")
 
-    # Bank any active session before changing operator or unallocating
+    # Bank any active session only if the job was already actively running in Studio
     if job.work_started_at and job.status in (models.ArtworkStatus.ACTIVE, models.ArtworkStatus.REWORK):
         elapsed = _compute_shift_hours(job.work_started_at, now_utc)
         job.actual_hours = round(float(job.actual_hours or 0.0) + elapsed, 2)
@@ -469,13 +516,12 @@ def allocate_job(job_id: int, payload: schemas.JobAllocate, db: Session = Depend
         job.priority = payload.priority
     if payload.allocation_notes is not None:
         job.allocation_notes = payload.allocation_notes
-    if payload.status:
-        job.status = _parse_status(payload.status)
 
-    # Zero-button auto-clock: start shift timer automatically once dispatched
-    if not is_unallocating and job.status in (models.ArtworkStatus.ACTIVE, models.ArtworkStatus.REWORK):
-        job.work_started_at = now_utc
-    elif is_unallocating:
+    # Keep newly allocated jobs in 'new' (Step 2: Allocated) with clock paused at 0.00h until Studio pickup
+    if is_unallocating:
+        job.status = models.ArtworkStatus.NEW
+        job.work_started_at = None
+    elif job.status == models.ArtworkStatus.NEW:
         job.work_started_at = None
 
     db.commit()
@@ -527,7 +573,7 @@ def command_job(job_id: int, cmd: schemas.JobCommand, db: Session = Depends(get_
             _credit_operator_hours(job, auto_elapsed, actor_email)
             job.work_started_at = None
 
-        # Entering active or rework (e.g. rejected back from QC/Client): start shift clock automatically
+        # Entering active or rework (e.g. operator begins work in Studio or rejected back from QC/Client): start shift clock
         if next_status in (models.ArtworkStatus.ACTIVE, models.ArtworkStatus.REWORK):
             if not job.work_started_at:
                 job.work_started_at = now_utc

@@ -80,6 +80,27 @@ class BulkJobAllocate(BaseModel):
     allocation_notes: str = Field(default="", alias="allocationNotes")
 
 
+def _get_role_slug(user: models.User) -> str:
+    if not user or not getattr(user, "role", None):
+        return ""
+    return (user.role.name or "").strip().lower()
+
+
+def require_roles(*allowed_roles: str):
+    allowed = {r.strip().lower() for r in allowed_roles}
+
+    def _checker(current_user: models.User = Depends(auth.get_current_user)) -> models.User:
+        role_slug = _get_role_slug(current_user)
+        if role_slug not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Role '{role_slug or 'unknown'}' is not authorized for this action",
+            )
+        return current_user
+
+    return _checker
+
+
 def ensure_artwork_time_columns():
     with engine.begin() as conn:
         conn.execute(
@@ -221,6 +242,7 @@ def _serialize_job(job: models.Artwork) -> dict:
     data["workStartedAt"] = job.work_started_at.isoformat() + "Z" if job.work_started_at else None
     data["operatorTimeLogs"] = job.operator_time_logs or {}
     data["billableAmount"] = job.billable_amount or 0.0
+    data["billingStatus"] = job.billing_status or "unbilled"
     return data
 
 
@@ -407,7 +429,7 @@ def get_jobs(db: Session = Depends(get_db)):
 @api.post(
     "/jobs",
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(auth.get_current_user)],
+    dependencies=[Depends(require_roles("admin", "project_manager"))],
 )
 def create_job(job: schemas.JobCreate, db: Session = Depends(get_db)):
     due_naive = job.sla_due_date.replace(tzinfo=None) if job.sla_due_date else None
@@ -451,7 +473,10 @@ def create_job(job: schemas.JobCreate, db: Session = Depends(get_db)):
     return _serialize_job(new_job)
 
 
-@api.patch("/jobs/bulk-allocate", dependencies=[Depends(auth.get_current_user)])
+@api.patch(
+    "/jobs/bulk-allocate",
+    dependencies=[Depends(require_roles("admin", "project_manager"))],
+)
 def bulk_allocate_jobs(payload: BulkJobAllocate, db: Session = Depends(get_db)):
     if not payload.job_ids:
         return []
@@ -487,7 +512,10 @@ def bulk_allocate_jobs(payload: BulkJobAllocate, db: Session = Depends(get_db)):
     return [_serialize_job(j) for j in jobs]
 
 
-@api.patch("/jobs/{job_id}/allocate", dependencies=[Depends(auth.get_current_user)])
+@api.patch(
+    "/jobs/{job_id}/allocate",
+    dependencies=[Depends(require_roles("admin", "project_manager"))],
+)
 def allocate_job(job_id: int, payload: schemas.JobAllocate, db: Session = Depends(get_db)):
     job = db.query(models.Artwork).filter(models.Artwork.id == job_id).first()
     if not job:
@@ -496,7 +524,6 @@ def allocate_job(job_id: int, payload: schemas.JobAllocate, db: Session = Depend
     now_utc = datetime.utcnow()
     is_unallocating = (payload.assigned_to or "").strip().lower() in ("", "unassigned", "none")
 
-    # Bank any active session only if the job was already actively running in Studio
     if job.work_started_at and job.status in (models.ArtworkStatus.ACTIVE, models.ArtworkStatus.REWORK):
         elapsed = _compute_shift_hours(job.work_started_at, now_utc)
         job.actual_hours = round(float(job.actual_hours or 0.0) + elapsed, 2)
@@ -517,7 +544,6 @@ def allocate_job(job_id: int, payload: schemas.JobAllocate, db: Session = Depend
     if payload.allocation_notes is not None:
         job.allocation_notes = payload.allocation_notes
 
-    # Keep newly allocated jobs in 'new' (Step 2: Allocated) with clock paused at 0.00h until Studio pickup
     if is_unallocating:
         job.status = models.ArtworkStatus.NEW
         job.work_started_at = None
@@ -529,17 +555,44 @@ def allocate_job(job_id: int, payload: schemas.JobAllocate, db: Session = Depend
     return _serialize_job(job)
 
 
-@api.patch("/jobs/{job_id}/command", dependencies=[Depends(auth.get_current_user)])
-def command_job(job_id: int, cmd: schemas.JobCommand, db: Session = Depends(get_db)):
+@api.patch("/jobs/{job_id}/command")
+def command_job(
+    job_id: int,
+    cmd: schemas.JobCommand,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
     job = db.query(models.Artwork).filter(models.Artwork.id == job_id).first()
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
 
+    role_slug = _get_role_slug(current_user)
     now_utc = datetime.utcnow()
     data = cmd.payload or {}
-    actor_email = data.get("logged_by") or data.get("loggedBy") or ""
+    actor_email = data.get("logged_by") or data.get("loggedBy") or current_user.email or ""
 
-    # 1. Handle direct session / handoff hours logging (used at QC handoff or sequential step handoff)
+    # Server-side RBAC boundary checks
+    if role_slug == "client":
+        if cmd.commandName == "UPDATE_BILLING" or "billingStatus" in data or "billing_status" in data:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Clients cannot modify billing status")
+        if "status" in data and data["status"]:
+            requested = _parse_status(data["status"])
+            if requested not in (models.ArtworkStatus.APPROVED, models.ArtworkStatus.REWORK):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Client reviewers can only approve or request revisions on proofs",
+                )
+
+    if ("billingStatus" in data or "billing_status" in data or cmd.commandName == "UPDATE_BILLING") and role_slug not in (
+        "admin",
+        "project_manager",
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators and project managers can update billing status",
+        )
+
+    # 1. Handle direct session / handoff hours logging
     if "session_hours" in data or "sessionHours" in data:
         raw_session = data.get("session_hours") if "session_hours" in data else data.get("sessionHours")
         session_hrs = max(0.0, float(raw_session or 0.0))
@@ -559,7 +612,6 @@ def command_job(job_id: int, cmd: schemas.JobCommand, db: Session = Depends(get_
     if "status" in data and data["status"]:
         next_status = _parse_status(data["status"])
 
-        # Moving out of active/rework into QC/review/approved: auto-bank any unlogged shift elapsed time
         if (
             next_status in (models.ArtworkStatus.QC, models.ArtworkStatus.REVIEW, models.ArtworkStatus.APPROVED)
             and job.work_started_at
@@ -573,7 +625,6 @@ def command_job(job_id: int, cmd: schemas.JobCommand, db: Session = Depends(get_
             _credit_operator_hours(job, auto_elapsed, actor_email)
             job.work_started_at = None
 
-        # Entering active or rework (e.g. operator begins work in Studio or rejected back from QC/Client): start shift clock
         if next_status in (models.ArtworkStatus.ACTIVE, models.ArtworkStatus.REWORK):
             if not job.work_started_at:
                 job.work_started_at = now_utc
@@ -581,8 +632,15 @@ def command_job(job_id: int, cmd: schemas.JobCommand, db: Session = Depends(get_
             job.work_started_at = None
 
         job.status = next_status
-        if next_status == models.ArtworkStatus.APPROVED:
+        if next_status == models.ArtworkStatus.APPROVED and (job.billing_status or "unbilled") == "unbilled":
             job.billing_status = "ready_to_invoice"
+
+    # 3. Handle billing status updates (unbilled / ready_to_invoice / invoiced / paid)
+    raw_billing = data.get("billing_status") or data.get("billingStatus")
+    if raw_billing:
+        clean_billing = str(raw_billing).strip().lower()
+        if clean_billing in ("unbilled", "ready_to_invoice", "invoiced", "paid"):
+            job.billing_status = clean_billing
 
     if "file_url" in data and data["file_url"]:
         job.file_url = data["file_url"]

@@ -684,8 +684,14 @@ def command_job(
 
     # Server-side RBAC boundary checks
     if role_slug == "client":
-        if cmd.commandName == "UPDATE_BILLING" or "billingStatus" in data or "billing_status" in data:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Clients cannot modify billing status")
+        if (
+            cmd.commandName in ("UPDATE_BILLING", "APPLY_CHANGE_ORDER")
+            or "billingStatus" in data
+            or "billing_status" in data
+            or "billableAmount" in data
+            or "billable_amount" in data
+        ):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Clients cannot modify billing or commercial fees")
         if "status" in data and data["status"]:
             requested = _parse_status(data["status"])
             if requested not in (models.ArtworkStatus.APPROVED, models.ArtworkStatus.REWORK):
@@ -789,6 +795,17 @@ def command_job(
         clean_billing = str(raw_billing).strip().lower()
         if clean_billing in ("unbilled", "ready_to_invoice", "invoiced", "paid"):
             job.billing_status = clean_billing
+
+    # 5. Handle commercial change-order billable amount adjustments (Admin / PM only)
+    if "billable_amount" in data or "billableAmount" in data or cmd.commandName == "APPLY_CHANGE_ORDER":
+        if role_slug not in ("admin", "project_manager"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only administrators and project managers can adjust billable amounts",
+            )
+        raw_amt = data.get("billable_amount") if "billable_amount" in data else data.get("billableAmount")
+        if raw_amt is not None:
+            job.billable_amount = max(0.0, float(raw_amt or 0.0))
 
     if incoming_file_url:
         job.file_url = incoming_file_url

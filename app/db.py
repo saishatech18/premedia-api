@@ -1,22 +1,20 @@
+import os
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-from .config import settings
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Establish the core connection to Supabase (disable prepared statements for transaction pooler)
 engine = create_engine(
-    settings.database_url,
-    connect_args={"prepare_threshold": None},
+    DATABASE_URL,
     pool_pre_ping=True,
 )
 
-# Create a session factory to handle individual database transactions
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# This Base class is inherited by your database models (Users, Roles, Artworks)
 Base = declarative_base()
 
-# A helper function to safely open and close database sessions for your API routes
+
 def get_db():
     db = SessionLocal()
     try:

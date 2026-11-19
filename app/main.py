@@ -112,6 +112,9 @@ def ensure_artwork_time_columns():
         conn.execute(
             text("ALTER TABLE artworks ADD COLUMN IF NOT EXISTS operator_time_logs JSONB DEFAULT '{}'::jsonb")
         )
+        conn.execute(
+            text("ALTER TABLE artworks ADD COLUMN IF NOT EXISTS version_history JSONB DEFAULT '[]'::jsonb")
+        )
 
 
 def seed_roles():
@@ -219,6 +222,65 @@ def _credit_operator_hours(job: models.Artwork, session_hours: float, actor_key:
         job.operator_time_logs = logs
 
 
+def _get_version_history(job: models.Artwork) -> list:
+    raw = getattr(job, "version_history", None)
+    if isinstance(raw, list) and len(raw) > 0:
+        return list(raw)
+    if job.file_url:
+        return [
+            {
+                "version": 1,
+                "label": "v1",
+                "fileUrl": job.file_url,
+                "notes": job.notes or "Initial submission",
+                "submittedBy": job.assigned_to or "Studio",
+                "status": job.status.value if hasattr(job.status, "value") else str(job.status),
+                "feedback": "",
+                "timestamp": (job.created_at.isoformat() + "Z") if getattr(job, "created_at", None) else datetime.utcnow().isoformat() + "Z",
+            }
+        ]
+    return []
+
+
+def _record_version_submission(job: models.Artwork, file_url: str, notes: str, actor: str, now_utc: datetime):
+    history = _get_version_history(job)
+    # If v1 was just the initial brief asset and hasn't had a studio QC pass yet, update v1; otherwise append v2, v3...
+    if len(history) == 1 and history[0].get("stage") == "ingest" and not history[0].get("feedback"):
+        history[0]["fileUrl"] = file_url or history[0].get("fileUrl", "")
+        history[0]["notes"] = notes or history[0].get("notes", "")
+        history[0]["submittedBy"] = actor or job.assigned_to or "Studio"
+        history[0]["stage"] = "qc_submitted"
+        history[0]["timestamp"] = now_utc.isoformat() + "Z"
+    else:
+        next_ver = len(history) + 1
+        history.append(
+            {
+                "version": next_ver,
+                "label": f"v{next_ver}",
+                "fileUrl": file_url or job.file_url or "",
+                "notes": notes or f"Revision v{next_ver} submitted for QC",
+                "submittedBy": actor or job.assigned_to or "Studio",
+                "stage": "qc_submitted",
+                "feedback": "",
+                "timestamp": now_utc.isoformat() + "Z",
+            }
+        )
+    job.version_history = history
+
+
+def _attach_version_feedback(job: models.Artwork, feedback_text: str, decision: str, actor: str, now_utc: datetime):
+    history = _get_version_history(job)
+    if not history:
+        return
+    latest = dict(history[-1])
+    latest["feedback"] = feedback_text or latest.get("feedback", "")
+    latest["decision"] = decision
+    latest["reviewedBy"] = actor
+    latest["reviewedAt"] = now_utc.isoformat() + "Z"
+    history[-1] = latest
+    job.version_history = history
+
+
 def _serialize_job(job: models.Artwork) -> dict:
     data = schemas.JobResponse.model_validate(job).model_dump()
     now_utc = datetime.utcnow()
@@ -228,6 +290,7 @@ def _serialize_job(job: models.Artwork) -> dict:
         else 0.0
     )
     banked_hours = float(job.actual_hours or 0.0)
+    versions = _get_version_history(job)
 
     data["assignedTo"] = job.assigned_to or "Unassigned"
     data["fileUrl"] = job.file_url or ""
@@ -241,6 +304,8 @@ def _serialize_job(job: models.Artwork) -> dict:
     data["effectiveActualHours"] = round(banked_hours + live_session_hours, 2)
     data["workStartedAt"] = job.work_started_at.isoformat() + "Z" if job.work_started_at else None
     data["operatorTimeLogs"] = job.operator_time_logs or {}
+    data["versionHistory"] = versions
+    data["currentVersion"] = len(versions) if versions else 1
     data["billableAmount"] = job.billable_amount or 0.0
     data["billingStatus"] = job.billing_status or "unbilled"
     return data
@@ -434,6 +499,21 @@ def get_jobs(db: Session = Depends(get_db)):
 def create_job(job: schemas.JobCreate, db: Session = Depends(get_db)):
     due_naive = job.sla_due_date.replace(tzinfo=None) if job.sla_due_date else None
     parsed_status = _parse_status(job.status)
+    now_utc = datetime.utcnow()
+    initial_versions = []
+    if job.file_url:
+        initial_versions.append(
+            {
+                "version": 1,
+                "label": "v1",
+                "fileUrl": job.file_url,
+                "notes": job.notes or "Initial brief & artwork ingested",
+                "submittedBy": job.assigned_to or "Intake",
+                "stage": "ingest",
+                "feedback": "",
+                "timestamp": now_utc.isoformat() + "Z",
+            }
+        )
 
     new_job = models.Artwork(
         title=job.title,
@@ -452,8 +532,9 @@ def create_job(job: schemas.JobCreate, db: Session = Depends(get_db)):
         sla_hours=job.sla_hours,
         estimated_hours=job.estimated_hours,
         actual_hours=0.0,
-        work_started_at=datetime.utcnow() if parsed_status == models.ArtworkStatus.ACTIVE else None,
+        work_started_at=now_utc if parsed_status == models.ArtworkStatus.ACTIVE else None,
         operator_time_logs={},
+        version_history=initial_versions,
         billing_currency=job.billing_currency or "INR",
         billable_amount=job.billable_amount,
         billing_status=job.billing_status or "unbilled",
@@ -570,6 +651,7 @@ def command_job(
     now_utc = datetime.utcnow()
     data = cmd.payload or {}
     actor_email = data.get("logged_by") or data.get("loggedBy") or current_user.email or ""
+    actor_name = current_user.full_name or actor_email or "Studio"
 
     # Server-side RBAC boundary checks
     if role_slug == "client":
@@ -608,6 +690,9 @@ def command_job(
             _credit_operator_hours(job, delta, actor_email)
         job.work_started_at = None
 
+    incoming_file_url = data.get("file_url") or data.get("fileUrl") or ""
+    incoming_notes = data.get("notes") if "notes" in data else None
+
     # 2. Handle status transition & zero-button shift timer lifecycle
     if "status" in data and data["status"]:
         next_status = _parse_status(data["status"])
@@ -631,6 +716,36 @@ def command_job(
         elif next_status in (models.ArtworkStatus.QC, models.ArtworkStatus.REVIEW, models.ArtworkStatus.APPROVED, models.ArtworkStatus.NEW):
             job.work_started_at = None
 
+        # Record version snapshot on QC submission
+        if next_status == models.ArtworkStatus.QC or cmd.commandName == "SUBMIT_QC":
+            _record_version_submission(
+                job,
+                incoming_file_url or job.file_url or "",
+                incoming_notes or job.notes or "",
+                actor_name,
+                now_utc,
+            )
+
+        # Record review feedback on rejection / approval
+        if cmd.commandName in ("CLIENT_REJECT", "QC_REJECT") or (
+            next_status == models.ArtworkStatus.REWORK and incoming_notes
+        ):
+            _attach_version_feedback(
+                job,
+                incoming_notes or "Revision requested",
+                "changes_requested",
+                actor_name,
+                now_utc,
+            )
+        elif next_status == models.ArtworkStatus.APPROVED or cmd.commandName == "CLIENT_APPROVE":
+            _attach_version_feedback(
+                job,
+                incoming_notes or "Approved for commercial release",
+                "approved",
+                actor_name,
+                now_utc,
+            )
+
         job.status = next_status
         if next_status == models.ArtworkStatus.APPROVED and (job.billing_status or "unbilled") == "unbilled":
             job.billing_status = "ready_to_invoice"
@@ -642,12 +757,10 @@ def command_job(
         if clean_billing in ("unbilled", "ready_to_invoice", "invoiced", "paid"):
             job.billing_status = clean_billing
 
-    if "file_url" in data and data["file_url"]:
-        job.file_url = data["file_url"]
-    elif "fileUrl" in data and data["fileUrl"]:
-        job.file_url = data["fileUrl"]
-    if "notes" in data and data["notes"] is not None:
-        job.notes = data["notes"]
+    if incoming_file_url:
+        job.file_url = incoming_file_url
+    if incoming_notes is not None:
+        job.notes = incoming_notes
     if "assigned_to" in data and data["assigned_to"]:
         job.assigned_to = data["assigned_to"]
     elif "assignedTo" in data and data["assignedTo"]:

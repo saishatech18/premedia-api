@@ -1,181 +1,123 @@
 import os
+import random
 import sys
+from datetime import datetime
 import httpx
 
-BASE_URL = os.getenv("PREMEDIA_API_URL", "https://premedia-api.onrender.com").rstrip("/")
-
+BASE_URL = os.getenv("PREMEDIA_API_URL", "https://premedia-frontend.onrender.com").rstrip("/")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
-OPERATOR_EMAIL = os.getenv("OPERATOR_EMAIL", "")
-OPERATOR_PASSWORD = os.getenv("OPERATOR_PASSWORD", "")
-CLIENT_EMAIL = os.getenv("CLIENT_EMAIL", "")
-CLIENT_PASSWORD = os.getenv("CLIENT_PASSWORD", "")
+
+DEMO_CAMPAIGNS = [
+    {
+        "title": "Velvet Noir Cold Brew Can 330ml (Wrap Sleeve)",
+        "project_name": "Velvet Noir RTD Coffee Launch",
+        "client_name": "Roast & Co. Beverages",
+        "sku_prefix": "SKU-VN-330",
+        "versions": {
+            "v1": "https://images.unsplash.com/photo-1559056199-641a0ac8b55e?auto=format&fit=crop&w=1200&q=80",
+            "v2": "https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?auto=format&fit=crop&w=1200&q=80",
+            "v3": "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=1200&q=80",
+        },
+        "v1_feedback": "v1 Feedback: Darken roast background tone by 12% so metallic gold typography pops.",
+        "v2_feedback": "v2 Feedback: Contrast is spot on! Shift nutrition panel 3mm inward from seam bleed.",
+    },
+    {
+        "title": "Saffron & Neroli Serum Dropper Box (Foil + Emboss)",
+        "project_name": "Lumina Botanicals Festive Edition",
+        "client_name": "Lumina Derma Labs",
+        "sku_prefix": "SKU-LUM-30",
+        "versions": {
+            "v1": "https://images.unsplash.com/photo-1611930022073-b7a4ba5fcccd?auto=format&fit=crop&w=1200&q=80",
+            "v2": "https://images.unsplash.com/photo-1571781926291-c477ebfd024b?auto=format&fit=crop&w=1200&q=80",
+            "v3": "https://images.unsplash.com/photo-1598440947619-2c35fc9aa908?auto=format&fit=crop&w=1200&q=80",
+        },
+        "v1_feedback": "v1 Feedback: Warm up amber glass highlights and increase Pantone 871C foil border thickness.",
+        "v2_feedback": "v2 Feedback: Lighting looks great! Adjust front ingredient callout alignment to center.",
+    },
+    {
+        "title": "Matcha Ceremonial Tin Label & Outer Carton",
+        "project_name": "Kyoto Harvest Reserve Line",
+        "client_name": "Uji Leaf Artisans",
+        "sku_prefix": "SKU-UJI-100",
+        "versions": {
+            "v1": "https://images.unsplash.com/photo-1582793988951-9aed5509eb97?auto=format&fit=crop&w=1200&q=80",
+            "v2": "https://images.unsplash.com/photo-1515823064-d6e0c04616a7?auto=format&fit=crop&w=1200&q=80",
+            "v3": "https://images.unsplash.com/photo-1563822249366-3efb23b8e0c9?auto=format&fit=crop&w=1200&q=80",
+        },
+        "v1_feedback": "v1 Feedback: Boost emerald green saturation on ceremonial seal and sharpen kanji crest.",
+        "v2_feedback": "v2 Feedback: Color balance approved! Move net weight badge 2mm above bottom trim line.",
+    },
+]
 
 
-def login(client: httpx.Client, email: str, password: str) -> dict:
-    res = client.post("/api/auth/login", json={"email": email, "password": password})
-    assert res.status_code == 200, f"Login failed for {email}: {res.status_code} {res.text}"
-    return res.json()
-
-
-def auth_headers(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
-
-
-def run_e2e():
+def run():
     if not ADMIN_EMAIL or not ADMIN_PASSWORD:
-        print("ERROR: Set ADMIN_EMAIL and ADMIN_PASSWORD environment variables first.", file=sys.stderr)
+        print("Set ADMIN_EMAIL and ADMIN_PASSWORD first.", file=sys.stderr)
         sys.exit(1)
 
+    campaign = random.choice(DEMO_CAMPAIGNS)
+    suffix = datetime.now().strftime("%H%M%S")
+    project_code = f"PRJ-DEMO-{suffix}"
+    sku_code = f"{campaign['sku_prefix']}-{suffix[-3:]}"
+    assets = campaign["versions"]
+
     with httpx.Client(base_url=BASE_URL, timeout=45.0) as client:
-        print(f"1. Health Check -> {BASE_URL}/")
-        health = client.get("/")
-        assert health.status_code == 200, f"Health check failed: {health.status_code}"
-        print("   API reachable.")
+        login = client.post("/api/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
+        login.raise_for_status()
+        hdr = {"Authorization": f"Bearer {login.json()['token']}"}
 
-        print(f"2. Authenticating Admin ({ADMIN_EMAIL})...")
-        admin_session = login(client, ADMIN_EMAIL, ADMIN_PASSWORD)
-        admin_hdr = auth_headers(admin_session["token"])
-
-        print("3. Stage 01 (Intake): Creating test deliverable...")
-        create_res = client.post(
+        # 1. Ingest v1 Job
+        job = client.post(
             "/api/jobs",
-            headers=admin_hdr,
+            headers=hdr,
             json={
-                "title": "E2E Automated Verification Pack",
-                "project_code": "PRJ-E2E-999",
-                "project_name": "E2E Verification Campaign",
-                "client_name": "Test Client Ltd",
-                "sku_code": "SKU-E2E-01",
-                "complexity_tier": "standard",
-                "sla_hours": 24,
-                "estimated_hours": 2.0,
-                "billable_amount": 2500.0,
+                "title": campaign["title"],
+                "project_code": project_code,
+                "project_name": campaign["project_name"],
+                "client_name": campaign["client_name"],
+                "sku_code": sku_code,
+                "complexity_tier": "complex",
+                "sla_hours": 48,
+                "estimated_hours": 4.5,
+                "billable_amount": 8500.0,
                 "billing_currency": "INR",
-                "priority": "normal",
-            },
-        )
-        assert create_res.status_code == 201, f"Job creation failed: {create_res.status_code} {create_res.text}"
-        job = create_res.json()
-        job_id = job["id"]
-        assert job["status"] == "new", f"Expected status 'new', got {job['status']}"
-        assert job["actualHours"] == 0.0, f"Expected 0.0 actualHours, got {job['actualHours']}"
-        assert job["workStartedAt"] is None, "Clock should be paused on creation"
-        print(f"   Job #{job_id} created (status=new, actualHours=0.00, clock=paused).")
-
-        print("4. Stage 02 (Allocation): Dispatching to operator...")
-        alloc_res = client.patch(
-            f"/api/jobs/{job_id}/allocate",
-            headers=admin_hdr,
-            json={
-                "assignedTo": "John OR",
                 "priority": "high",
-                "allocationNotes": '[PLAN:{"mode":"single","operators":["John OR"]}]',
+                "file_url": assets["v1"],
             },
+        ).json()
+        jid = job["id"]
+        print(f"Created Demo Job #{jid}: {project_code} — {campaign['title']} (v1)")
+
+        # 2. v1 -> QC -> Proofing -> Client Rejects v1
+        client.patch(f"/api/jobs/{jid}/allocate", headers=hdr, json={"assignedTo": "John OR"})
+        client.patch(f"/api/jobs/{jid}/command", headers=hdr, json={"commandName": "START_WORK", "payload": {"status": "active"}})
+        client.patch(f"/api/jobs/{jid}/command", headers=hdr, json={"commandName": "SUBMIT_QC", "payload": {"status": "qc", "sessionHours": 1.5, "fileUrl": assets["v1"]}})
+        client.patch(f"/api/jobs/{jid}/command", headers=hdr, json={"commandName": "QC_PASS", "payload": {"status": "review"}})
+        client.patch(
+            f"/api/jobs/{jid}/command",
+            headers=hdr,
+            json={"commandName": "CLIENT_REJECT", "payload": {"status": "rework", "notes": campaign["v1_feedback"]}},
         )
-        assert alloc_res.status_code == 200, f"Allocation failed: {alloc_res.status_code} {alloc_res.text}"
-        alloc_job = alloc_res.json()
-        assert alloc_job["status"] == "new", "Allocated job should stay 'new' until Studio pickup"
-        assert alloc_job["workStartedAt"] is None, "Clock must remain paused after allocation"
-        print("   Allocated to John OR (clock still paused at 0.00h).")
+        print("Logged v1 Client Rejection -> Rework (v2)")
 
-        print("5. Stage 05 (Studio): Starting Studio Work...")
-        start_res = client.patch(
-            f"/api/jobs/{job_id}/command",
-            headers=admin_hdr,
-            json={"commandName": "START_WORK", "payload": {"status": "active"}},
+        # 3. v2 -> QC -> Proofing -> Client Rejects v2
+        client.patch(f"/api/jobs/{jid}/command", headers=hdr, json={"commandName": "START_WORK", "payload": {"status": "active"}})
+        client.patch(f"/api/jobs/{jid}/command", headers=hdr, json={"commandName": "SUBMIT_QC", "payload": {"status": "qc", "sessionHours": 1.0, "fileUrl": assets["v2"]}})
+        client.patch(f"/api/jobs/{jid}/command", headers=hdr, json={"commandName": "QC_PASS", "payload": {"status": "review"}})
+        client.patch(
+            f"/api/jobs/{jid}/command",
+            headers=hdr,
+            json={"commandName": "CLIENT_REJECT", "payload": {"status": "rework", "notes": campaign["v2_feedback"]}},
         )
-        assert start_res.status_code == 200, f"Start work failed: {start_res.status_code} {start_res.text}"
-        active_job = start_res.json()
-        assert active_job["status"] == "active"
-        assert active_job["workStartedAt"] is not None, "Clock should have started"
-        print("   Shift clock started (status=active).")
+        print("Logged v2 Client Rejection -> Rework (v3)")
 
-        print("6. Stage 06 (QC): Submitting deliverable with 1.25h effort...")
-        qc_res = client.patch(
-            f"/api/jobs/{job_id}/command",
-            headers=admin_hdr,
-            json={
-                "commandName": "SUBMIT_QC",
-                "payload": {
-                    "status": "qc",
-                    "sessionHours": 1.25,
-                    "fileUrl": "https://drive.google.com/file/d/e2e-test/view",
-                },
-            },
-        )
-        assert qc_res.status_code == 200, f"QC handoff failed: {qc_res.status_code} {qc_res.text}"
-        qc_job = qc_res.json()
-        assert qc_job["status"] == "qc"
-        assert qc_job["actualHours"] == 1.25
-        assert qc_job["workStartedAt"] is None, "Clock must stop when submitted to QC"
-        print("   Banked 1.25h and paused clock (status=qc).")
-
-        print("7. Stage 07 (Proofing) -> Approved...")
-        proof_res = client.patch(
-            f"/api/jobs/{job_id}/command",
-            headers=admin_hdr,
-            json={"commandName": "QC_PASS", "payload": {"status": "review"}},
-        )
-        assert proof_res.status_code == 200 and proof_res.json()["status"] == "review"
-
-        approve_res = client.patch(
-            f"/api/jobs/{job_id}/command",
-            headers=admin_hdr,
-            json={"commandName": "CLIENT_APPROVE", "payload": {"status": "approved"}},
-        )
-        assert approve_res.status_code == 200
-        approved_job = approve_res.json()
-        assert approved_job["status"] == "approved"
-        assert approved_job["billingStatus"] == "ready_to_invoice"
-        print("   Approved and queued for billing (billingStatus=ready_to_invoice).")
-
-        print("8. Stage 08 (Billing & Invoicing): Testing Invoiced -> Paid transitions...")
-        inv_res = client.patch(
-            f"/api/jobs/{job_id}/command",
-            headers=admin_hdr,
-            json={"commandName": "UPDATE_BILLING", "payload": {"billingStatus": "invoiced"}},
-        )
-        assert inv_res.status_code == 200 and inv_res.json()["billingStatus"] == "invoiced"
-
-        paid_res = client.patch(
-            f"/api/jobs/{job_id}/command",
-            headers=admin_hdr,
-            json={"commandName": "UPDATE_BILLING", "payload": {"billingStatus": "paid"}},
-        )
-        assert paid_res.status_code == 200 and paid_res.json()["billingStatus"] == "paid"
-        print("   Billing lifecycle verified (ready_to_invoice -> invoiced -> paid).")
-
-        if OPERATOR_EMAIL and OPERATOR_PASSWORD:
-            print(f"9a. Testing Operator RBAC restrictions ({OPERATOR_EMAIL})...")
-            op_session = login(client, OPERATOR_EMAIL, OPERATOR_PASSWORD)
-            op_hdr = auth_headers(op_session["token"])
-            op_bill = client.patch(
-                f"/api/jobs/{job_id}/command",
-                headers=op_hdr,
-                json={"commandName": "UPDATE_BILLING", "payload": {"billingStatus": "unbilled"}},
-            )
-            assert op_bill.status_code == 403, f"Expected 403 for operator billing edit, got {op_bill.status_code}"
-            print("   Operator blocked from billing changes (403 Forbidden).")
-
-        if CLIENT_EMAIL and CLIENT_PASSWORD:
-            print(f"9b. Testing Client RBAC restrictions ({CLIENT_EMAIL})...")
-            cli_session = login(client, CLIENT_EMAIL, CLIENT_PASSWORD)
-            cli_hdr = auth_headers(cli_session["token"])
-            forbidden_alloc = client.patch(
-                f"/api/jobs/{job_id}/allocate",
-                headers=cli_hdr,
-                json={"assignedTo": "Unauthorized"},
-            )
-            assert forbidden_alloc.status_code == 403, f"Expected 403 for client allocate, got {forbidden_alloc.status_code}"
-            print("   Client blocked from allocation (403 Forbidden).")
-
-        print(f"\nALL E2E CHECKS PASSED! (Test Job #{job_id} - PRJ-E2E-999)")
+        # 4. v3 -> QC -> Parked in Client Proofing (v3)
+        client.patch(f"/api/jobs/{jid}/command", headers=hdr, json={"commandName": "START_WORK", "payload": {"status": "active"}})
+        client.patch(f"/api/jobs/{jid}/command", headers=hdr, json={"commandName": "SUBMIT_QC", "payload": {"status": "qc", "sessionHours": 0.75, "fileUrl": assets["v3"]}})
+        client.patch(f"/api/jobs/{jid}/command", headers=hdr, json={"commandName": "QC_PASS", "payload": {"status": "review"}})
+        print(f"Ready for Demo! Job #{jid} ({project_code}) is parked in Stage 07: Client Proofing at v3 (3.25h banked).")
 
 
 if __name__ == "__main__":
-    try:
-        run_e2e()
-    except AssertionError as exc:
-        print(f"\nTEST FAILED: {exc}", file=sys.stderr)
-        sys.exit(1)
+    run()

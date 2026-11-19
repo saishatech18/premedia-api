@@ -100,6 +100,7 @@ class Artwork(Base):
     work_started_at = Column(DateTime, nullable=True)
     operator_time_logs = Column(JSON, default=dict, nullable=True)
     version_history = Column(JSON, default=list, nullable=True)
+    pins = Column(JSON, default=list, nullable=True)
     billing_currency = Column(String, default="INR", nullable=True)
     billable_amount = Column(Float, default=2500.0, nullable=True)
     billing_status = Column(String, default="unbilled", nullable=True)

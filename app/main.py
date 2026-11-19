@@ -81,7 +81,7 @@ class BulkJobAllocate(BaseModel):
 
 
 def _get_role_slug(user: models.User) -> str:
-    if not user or not getattr(user, "role", None):
+    if not user or getattr(user, "role", None) is None:
         return ""
     return (user.role.name or "").strip().lower()
 
@@ -114,6 +114,9 @@ def ensure_artwork_time_columns():
         )
         conn.execute(
             text("ALTER TABLE artworks ADD COLUMN IF NOT EXISTS version_history JSONB DEFAULT '[]'::jsonb")
+        )
+        conn.execute(
+            text("ALTER TABLE artworks ADD COLUMN IF NOT EXISTS pins JSONB DEFAULT '[]'::jsonb")
         )
 
 
@@ -244,7 +247,6 @@ def _get_version_history(job: models.Artwork) -> list:
 
 def _record_version_submission(job: models.Artwork, file_url: str, notes: str, actor: str, now_utc: datetime):
     history = _get_version_history(job)
-    # If v1 was just the initial brief asset and hasn't had a studio QC pass yet, update v1; otherwise append v2, v3...
     if len(history) == 1 and history[0].get("stage") == "ingest" and not history[0].get("feedback"):
         history[0]["fileUrl"] = file_url or history[0].get("fileUrl", "")
         history[0]["notes"] = notes or history[0].get("notes", "")
@@ -281,6 +283,29 @@ def _attach_version_feedback(job: models.Artwork, feedback_text: str, decision: 
     job.version_history = history
 
 
+def _normalize_pins(raw_pins) -> list:
+    if not isinstance(raw_pins, list):
+        return []
+    cleaned = []
+    for idx, p in enumerate(raw_pins):
+        if not isinstance(p, dict):
+            continue
+        cleaned.append(
+            {
+                "id": p.get("id") or (idx + 1),
+                "x": max(0, min(100, int(p.get("x", 50)))),
+                "y": max(0, min(100, int(p.get("y", 50)))),
+                "author": str(p.get("author") or "Client Reviewer"),
+                "comment": str(p.get("comment") or "").strip(),
+                "version": int(p.get("version") or 1),
+                "timestamp": str(p.get("timestamp") or ""),
+                "resolved": bool(p.get("resolved", False)),
+                "resolvedBy": str(p.get("resolvedBy") or ""),
+            }
+        )
+    return cleaned
+
+
 def _serialize_job(job: models.Artwork) -> dict:
     data = schemas.JobResponse.model_validate(job).model_dump()
     now_utc = datetime.utcnow()
@@ -291,6 +316,7 @@ def _serialize_job(job: models.Artwork) -> dict:
     )
     banked_hours = float(job.actual_hours or 0.0)
     versions = _get_version_history(job)
+    pins_list = _normalize_pins(getattr(job, "pins", None))
 
     data["assignedTo"] = job.assigned_to or "Unassigned"
     data["fileUrl"] = job.file_url or ""
@@ -306,6 +332,8 @@ def _serialize_job(job: models.Artwork) -> dict:
     data["operatorTimeLogs"] = job.operator_time_logs or {}
     data["versionHistory"] = versions
     data["currentVersion"] = len(versions) if versions else 1
+    data["pins"] = pins_list
+    data["unresolvedPinCount"] = sum(1 for p in pins_list if not p.get("resolved"))
     data["billableAmount"] = job.billable_amount or 0.0
     data["billingStatus"] = job.billing_status or "unbilled"
     return data
@@ -535,6 +563,7 @@ def create_job(job: schemas.JobCreate, db: Session = Depends(get_db)):
         work_started_at=now_utc if parsed_status == models.ArtworkStatus.ACTIVE else None,
         operator_time_logs={},
         version_history=initial_versions,
+        pins=[],
         billing_currency=job.billing_currency or "INR",
         billable_amount=job.billable_amount,
         billing_status=job.billing_status or "unbilled",
@@ -674,7 +703,11 @@ def command_job(
             detail="Only administrators and project managers can update billing status",
         )
 
-    # 1. Handle direct session / handoff hours logging
+    # 1. Persist pin annotations / resolution state if provided
+    if "pins" in data and isinstance(data["pins"], list):
+        job.pins = _normalize_pins(data["pins"])
+
+    # 2. Handle direct session / handoff hours logging
     if "session_hours" in data or "sessionHours" in data:
         raw_session = data.get("session_hours") if "session_hours" in data else data.get("sessionHours")
         session_hrs = max(0.0, float(raw_session or 0.0))
@@ -693,7 +726,7 @@ def command_job(
     incoming_file_url = data.get("file_url") or data.get("fileUrl") or ""
     incoming_notes = data.get("notes") if "notes" in data else None
 
-    # 2. Handle status transition & zero-button shift timer lifecycle
+    # 3. Handle status transition & zero-button shift timer lifecycle
     if "status" in data and data["status"]:
         next_status = _parse_status(data["status"])
 
@@ -750,7 +783,7 @@ def command_job(
         if next_status == models.ArtworkStatus.APPROVED and (job.billing_status or "unbilled") == "unbilled":
             job.billing_status = "ready_to_invoice"
 
-    # 3. Handle billing status updates (unbilled / ready_to_invoice / invoiced / paid)
+    # 4. Handle billing status updates (unbilled / ready_to_invoice / invoiced / paid)
     raw_billing = data.get("billing_status") or data.get("billingStatus")
     if raw_billing:
         clean_billing = str(raw_billing).strip().lower()

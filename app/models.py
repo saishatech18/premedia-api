@@ -31,16 +31,18 @@ class User(Base):
     artworks = relationship("Artwork", back_populates="owner")
 
 
-# 3. COMPLEXITY TIERS TABLE (Admin-configurable timelines, hours & rates)
+# 3. COMPLEXITY TIERS TABLE (Studio Default & Client-Specific MSA Rate Cards)
 class ComplexityTier(Base):
     __tablename__ = "complexity_tiers"
 
     id = Column(Integer, primary_key=True, index=True)
-    slug = Column(String, unique=True, index=True, nullable=False)
+    client_name = Column(String, index=True, nullable=True)  # NULL = Studio Default Rate Card
+    slug = Column(String, index=True, nullable=False)
     label = Column(String, nullable=False)
     sla_hours = Column(Integer, default=24, nullable=False)
     est_hours = Column(Float, default=2.0, nullable=False)
     rate = Column(Float, default=2500.0, nullable=False)
+    currency = Column(String, default="INR", nullable=False)
     color = Column(String, default="emerald", nullable=False)
     is_custom = Column(Boolean, default=False, nullable=False)
     sort_order = Column(Integer, default=0, nullable=False)

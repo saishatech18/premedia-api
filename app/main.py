@@ -28,41 +28,49 @@ DEFAULT_ROLES = {
 
 DEFAULT_COMPLEXITY_TIERS = [
     {
+        "client_name": None,
         "slug": "standard",
         "label": "Standard",
         "sla_hours": 24,
         "est_hours": 2.0,
         "rate": 2500.0,
+        "currency": "INR",
         "color": "emerald",
         "is_custom": False,
         "sort_order": 1,
     },
     {
+        "client_name": None,
         "slug": "medium",
         "label": "Medium",
         "sla_hours": 48,
         "est_hours": 4.5,
         "rate": 5500.0,
+        "currency": "INR",
         "color": "blue",
         "is_custom": False,
         "sort_order": 2,
     },
     {
+        "client_name": None,
         "slug": "complex",
         "label": "Complex",
         "sla_hours": 72,
         "est_hours": 8.0,
         "rate": 10000.0,
+        "currency": "INR",
         "color": "purple",
         "is_custom": False,
         "sort_order": 3,
     },
     {
+        "client_name": None,
         "slug": "custom",
         "label": "Custom",
         "sla_hours": 96,
         "est_hours": 12.0,
         "rate": 0.0,
+        "currency": "INR",
         "color": "amber",
         "is_custom": True,
         "sort_order": 4,
@@ -78,6 +86,20 @@ class BulkJobAllocate(BaseModel):
     assigned_to: str = Field(..., alias="assignedTo")
     priority: str | None = None
     allocation_notes: str = Field(default="", alias="allocationNotes")
+
+
+class CloneClientRateCardRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    client_name: str = Field(..., alias="clientName")
+    currency: str = "INR"
+
+
+def _normalize_client_name(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    clean = raw.strip()
+    return clean if clean else None
 
 
 def _get_role_slug(user: models.User) -> str:
@@ -118,6 +140,25 @@ def ensure_artwork_time_columns():
         conn.execute(
             text("ALTER TABLE artworks ADD COLUMN IF NOT EXISTS pins JSONB DEFAULT '[]'::jsonb")
         )
+        # Client-specific rate card migration on complexity_tiers
+        conn.execute(
+            text("ALTER TABLE complexity_tiers ADD COLUMN IF NOT EXISTS client_name VARCHAR NULL")
+        )
+        conn.execute(
+            text("ALTER TABLE complexity_tiers ADD COLUMN IF NOT EXISTS currency VARCHAR DEFAULT 'INR' NOT NULL")
+        )
+        conn.execute(
+            text("ALTER TABLE complexity_tiers DROP CONSTRAINT IF EXISTS complexity_tiers_slug_key")
+        )
+        conn.execute(
+            text("DROP INDEX IF EXISTS ix_complexity_tiers_slug")
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_complexity_tiers_slug ON complexity_tiers (slug)")
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_complexity_tiers_client_name ON complexity_tiers (client_name)")
+        )
 
 
 def seed_roles():
@@ -137,8 +178,12 @@ def seed_roles():
 
 def seed_complexity_tiers():
     with SessionLocal() as db:
-        existing_count = db.query(models.ComplexityTier).count()
-        if existing_count == 0:
+        existing_defaults = (
+            db.query(models.ComplexityTier)
+            .filter(models.ComplexityTier.client_name.is_(None))
+            .count()
+        )
+        if existing_defaults == 0:
             for item in DEFAULT_COMPLEXITY_TIERS:
                 db.add(models.ComplexityTier(**item))
             db.commit()
@@ -411,7 +456,7 @@ def login(credentials: schemas.LoginRequest, db: Session = Depends(get_db)):
 
 
 # =====================================================================
-# COMPLEXITY TIERS ENDPOINTS (Database-driven Matrix)
+# COMPLEXITY TIERS ENDPOINTS (Studio Default & Client Rate Cards)
 # =====================================================================
 
 @api.get(
@@ -419,12 +464,84 @@ def login(credentials: schemas.LoginRequest, db: Session = Depends(get_db)):
     response_model=List[schemas.ComplexityTierResponse],
     dependencies=[Depends(auth.get_current_user)],
 )
-def get_complexity_tiers(db: Session = Depends(get_db)):
+def get_complexity_tiers(client_name: str | None = None, db: Session = Depends(get_db)):
+    clean_client = _normalize_client_name(client_name)
+    query = db.query(models.ComplexityTier)
+    if clean_client:
+        client_rows = (
+            query.filter(func.lower(models.ComplexityTier.client_name) == clean_client.lower())
+            .order_by(models.ComplexityTier.sort_order.asc(), models.ComplexityTier.id.asc())
+            .all()
+        )
+        if client_rows:
+            return client_rows
+        return (
+            db.query(models.ComplexityTier)
+            .filter(models.ComplexityTier.client_name.is_(None))
+            .order_by(models.ComplexityTier.sort_order.asc(), models.ComplexityTier.id.asc())
+            .all()
+        )
+
     return (
+        query.order_by(
+            models.ComplexityTier.client_name.asc().nullsfirst(),
+            models.ComplexityTier.sort_order.asc(),
+            models.ComplexityTier.id.asc(),
+        ).all()
+    )
+
+
+@api.post(
+    "/complexity-tiers/clone-for-client",
+    response_model=List[schemas.ComplexityTierResponse],
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(auth.require_admin_or_first_user)],
+)
+def clone_tiers_for_client(payload: CloneClientRateCardRequest, db: Session = Depends(get_db)):
+    clean_client = _normalize_client_name(payload.client_name)
+    if not clean_client:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Client name is required")
+
+    existing = (
         db.query(models.ComplexityTier)
+        .filter(func.lower(models.ComplexityTier.client_name) == clean_client.lower())
         .order_by(models.ComplexityTier.sort_order.asc(), models.ComplexityTier.id.asc())
         .all()
     )
+    if existing:
+        return existing
+
+    defaults = (
+        db.query(models.ComplexityTier)
+        .filter(models.ComplexityTier.client_name.is_(None))
+        .order_by(models.ComplexityTier.sort_order.asc(), models.ComplexityTier.id.asc())
+        .all()
+    )
+    source = defaults if defaults else [
+        models.ComplexityTier(**item) for item in DEFAULT_COMPLEXITY_TIERS
+    ]
+
+    created_rows = []
+    for item in source:
+        row = models.ComplexityTier(
+            client_name=clean_client,
+            slug=item.slug,
+            label=item.label,
+            sla_hours=item.sla_hours,
+            est_hours=item.est_hours,
+            rate=item.rate,
+            currency=(payload.currency or "INR").strip().upper(),
+            color=item.color,
+            is_custom=item.is_custom,
+            sort_order=item.sort_order,
+        )
+        db.add(row)
+        created_rows.append(row)
+
+    db.commit()
+    for row in created_rows:
+        db.refresh(row)
+    return created_rows
 
 
 @api.post(
@@ -434,20 +551,32 @@ def get_complexity_tiers(db: Session = Depends(get_db)):
     dependencies=[Depends(auth.require_admin_or_first_user)],
 )
 def create_complexity_tier(payload: schemas.ComplexityTierCreate, db: Session = Depends(get_db)):
+    clean_client = _normalize_client_name(payload.client_name)
     base_slug = _slugify(payload.slug or payload.label)
     slug = base_slug
     counter = 2
-    while db.query(models.ComplexityTier).filter(models.ComplexityTier.slug == slug).first():
+
+    def _slug_exists(candidate: str) -> bool:
+        q = db.query(models.ComplexityTier).filter(models.ComplexityTier.slug == candidate)
+        if clean_client:
+            q = q.filter(func.lower(models.ComplexityTier.client_name) == clean_client.lower())
+        else:
+            q = q.filter(models.ComplexityTier.client_name.is_(None))
+        return q.first() is not None
+
+    while _slug_exists(slug):
         slug = f"{base_slug}_{counter}"
         counter += 1
 
     max_order = db.query(func.max(models.ComplexityTier.sort_order)).scalar() or 0
     tier = models.ComplexityTier(
+        client_name=clean_client,
         slug=slug,
         label=payload.label.strip(),
         sla_hours=max(1, int(payload.sla_hours)),
         est_hours=max(0.5, float(payload.est_hours)),
         rate=max(0.0, float(payload.rate)),
+        currency=(payload.currency or "INR").strip().upper(),
         color=payload.color or "emerald",
         is_custom=bool(payload.is_custom),
         sort_order=payload.sort_order if payload.sort_order > 0 else max_order + 1,
@@ -478,6 +607,8 @@ def update_complexity_tier(
         tier.est_hours = max(0.5, float(payload.est_hours))
     if payload.rate is not None:
         tier.rate = max(0.0, float(payload.rate))
+    if payload.currency is not None and payload.currency.strip():
+        tier.currency = payload.currency.strip().upper()
     if payload.color is not None:
         tier.color = payload.color
     if payload.is_custom is not None:
@@ -499,11 +630,17 @@ def delete_complexity_tier(tier_id: int, db: Session = Depends(get_db)):
     tier = db.query(models.ComplexityTier).filter(models.ComplexityTier.id == tier_id).first()
     if not tier:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Complexity tier not found")
-    if db.query(models.ComplexityTier).count() <= 1:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one complexity tier must remain configured",
+    if tier.client_name is None:
+        default_count = (
+            db.query(models.ComplexityTier)
+            .filter(models.ComplexityTier.client_name.is_(None))
+            .count()
         )
+        if default_count <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one Studio Default complexity tier must remain configured",
+            )
     db.delete(tier)
     db.commit()
     return None
